@@ -2,6 +2,7 @@
 
 [![Gem Version](https://badge.fury.io/rb/ilios.svg)](https://badge.fury.io/rb/ilios)
 [![CI](https://github.com/Watson1978/ilios/actions/workflows/CI.yml/badge.svg)](https://github.com/Watson1978/ilios/actions/workflows/CI.yml)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Watson1978/ilios)
 
 Ilios that Cassandra driver written by C language for Ruby using [DataStax C/C++ Driver](https://github.com/datastax/cpp-driver).
 
