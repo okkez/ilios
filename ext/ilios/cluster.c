@@ -253,6 +253,28 @@ static void cluster_check_error(CassError error, const char *name)
     }
 }
 
+// NUM2UINT/NUM2ULL silently wrap negative values into huge unsigned
+// numbers, so reject negatives explicitly before converting.
+static unsigned cluster_value_to_uint(VALUE value)
+{
+    long v = NUM2LONG(value);
+
+    if (v < 0) {
+        rb_raise(rb_eRangeError, "Invalid value: %ld", v);
+    }
+    return NUM2UINT(value);
+}
+
+static cass_uint64_t cluster_value_to_uint64(VALUE value)
+{
+    long long v = NUM2LL(value);
+
+    if (v < 0) {
+        rb_raise(rb_eRangeError, "Invalid value: %lld", v);
+    }
+    return NUM2ULL(value);
+}
+
 /**
  * Sets the default consistency level of the statement.
  * Default is +CONSISTENCY_LOCAL_ONE+.
@@ -285,6 +307,262 @@ static VALUE cluster_serial_consistency(VALUE self, VALUE consistency)
 
     GET_CLUSTER(self, cassandra_cluster);
     cluster_check_error(cass_cluster_set_serial_consistency(cassandra_cluster->cluster, (CassConsistency)NUM2INT(consistency)), "serial_consistency");
+
+    return self;
+}
+
+/**
+ * Sets the number of IO threads that will handle query requests.
+ * Default is +1+.
+ *
+ * @param num_threads [Integer] A number of IO threads.
+ * @return [Cassandra::Cluster] self.
+ * @raise [ArgumentError] If zero was given.
+ */
+static VALUE cluster_num_threads_io(VALUE self, VALUE num_threads)
+{
+    CassandraCluster *cassandra_cluster;
+
+    GET_CLUSTER(self, cassandra_cluster);
+    cluster_check_error(cass_cluster_set_num_threads_io(cassandra_cluster->cluster, cluster_value_to_uint(num_threads)), "num_threads_io");
+
+    return self;
+}
+
+/**
+ * Sets the size of the fixed size queue that stores pending requests.
+ * Default is +8192+.
+ *
+ * @param queue_size [Integer] A queue size.
+ * @return [Cassandra::Cluster] self.
+ * @raise [ArgumentError] If zero was given.
+ */
+static VALUE cluster_queue_size_io(VALUE self, VALUE queue_size)
+{
+    CassandraCluster *cassandra_cluster;
+
+    GET_CLUSTER(self, cassandra_cluster);
+    cluster_check_error(cass_cluster_set_queue_size_io(cassandra_cluster->cluster, cluster_value_to_uint(queue_size)), "queue_size_io");
+
+    return self;
+}
+
+/**
+ * Sets the number of connections made to each server in each IO thread.
+ * Default is +1+.
+ *
+ * @param num_connections [Integer] A number of connections.
+ * @return [Cassandra::Cluster] self.
+ * @raise [ArgumentError] If zero was given.
+ */
+static VALUE cluster_core_connections_per_host(VALUE self, VALUE num_connections)
+{
+    CassandraCluster *cassandra_cluster;
+
+    GET_CLUSTER(self, cassandra_cluster);
+    cluster_check_error(cass_cluster_set_core_connections_per_host(cassandra_cluster->cluster, cluster_value_to_uint(num_connections)), "core_connections_per_host");
+
+    return self;
+}
+
+/**
+ * Configures the cluster to use a reconnection policy that waits a constant
+ * time between each reconnection attempt.
+ * Default is +2000+ milliseconds.
+ *
+ * @param delay_ms [Integer] A delay in milliseconds.
+ * @return [Cassandra::Cluster] self.
+ */
+static VALUE cluster_constant_reconnect(VALUE self, VALUE delay_ms)
+{
+    CassandraCluster *cassandra_cluster;
+
+    GET_CLUSTER(self, cassandra_cluster);
+    cass_cluster_set_constant_reconnect(cassandra_cluster->cluster, cluster_value_to_uint64(delay_ms));
+
+    return self;
+}
+
+/**
+ * Configures the cluster to use a reconnection policy that waits
+ * exponentially longer between each reconnection attempt; however
+ * will maintain a constant delay once the maximum delay is reached.
+ *
+ * @param base_delay_ms [Integer] A base delay in milliseconds.
+ * @param max_delay_ms [Integer] A maximum delay in milliseconds.
+ * @return [Cassandra::Cluster] self.
+ * @raise [ArgumentError] If the base delay is 1 or less, the maximum delay is 1 or less,
+ *   or the maximum delay is less than the base delay.
+ */
+static VALUE cluster_exponential_reconnect(VALUE self, VALUE base_delay_ms, VALUE max_delay_ms)
+{
+    CassandraCluster *cassandra_cluster;
+
+    GET_CLUSTER(self, cassandra_cluster);
+    cluster_check_error(cass_cluster_set_exponential_reconnect(cassandra_cluster->cluster, cluster_value_to_uint64(base_delay_ms), cluster_value_to_uint64(max_delay_ms)), "exponential_reconnect");
+
+    return self;
+}
+
+/**
+ * Enables/Disables Nagle's algorithm on the connections.
+ * Default is +true+ (disables Nagle's algorithm).
+ *
+ * @param enabled [Boolean] Whether to disable Nagle's algorithm.
+ * @return [Cassandra::Cluster] self.
+ */
+static VALUE cluster_tcp_nodelay(VALUE self, VALUE enabled)
+{
+    CassandraCluster *cassandra_cluster;
+
+    GET_CLUSTER(self, cassandra_cluster);
+    cass_cluster_set_tcp_nodelay(cassandra_cluster->cluster, RTEST(enabled) ? cass_true : cass_false);
+
+    return self;
+}
+
+/**
+ * Enables/Disables TCP keep-alive.
+ * Default is disabled.
+ *
+ * @param enabled [Boolean] Whether to enable TCP keep-alive.
+ * @param delay_secs [Integer] The initial delay in seconds. Ignored when disabled.
+ * @return [Cassandra::Cluster] self.
+ */
+static VALUE cluster_tcp_keepalive(VALUE self, VALUE enabled, VALUE delay_secs)
+{
+    CassandraCluster *cassandra_cluster;
+
+    GET_CLUSTER(self, cassandra_cluster);
+    cass_cluster_set_tcp_keepalive(cassandra_cluster->cluster, RTEST(enabled) ? cass_true : cass_false, cluster_value_to_uint(delay_secs));
+
+    return self;
+}
+
+/**
+ * Sets the amount of time between heartbeat messages and controls the amount
+ * of time the connection must be idle before sending heartbeat messages.
+ * This is useful for preventing intermediate network devices from dropping connections.
+ * Default is +30+ seconds.
+ *
+ * @param interval_secs [Integer] An interval in seconds. +0+ disables heartbeat messages.
+ * @return [Cassandra::Cluster] self.
+ */
+static VALUE cluster_connection_heartbeat_interval(VALUE self, VALUE interval_secs)
+{
+    CassandraCluster *cassandra_cluster;
+
+    GET_CLUSTER(self, cassandra_cluster);
+    cass_cluster_set_connection_heartbeat_interval(cassandra_cluster->cluster, cluster_value_to_uint(interval_secs));
+
+    return self;
+}
+
+/**
+ * Sets the amount of time a connection is allowed to be without a successful
+ * heartbeat response before being terminated and scheduled for reconnection.
+ * Default is +60+ seconds.
+ *
+ * @param timeout_secs [Integer] A timeout in seconds.
+ * @return [Cassandra::Cluster] self.
+ */
+static VALUE cluster_connection_idle_timeout(VALUE self, VALUE timeout_secs)
+{
+    CassandraCluster *cassandra_cluster;
+
+    GET_CLUSTER(self, cassandra_cluster);
+    cass_cluster_set_connection_idle_timeout(cassandra_cluster->cluster, cluster_value_to_uint(timeout_secs));
+
+    return self;
+}
+
+/**
+ * Configures the cluster to use round-robin load balancing.
+ * The driver discovers all nodes in a cluster and cycles through them per request.
+ *
+ * @return [Cassandra::Cluster] self.
+ */
+static VALUE cluster_load_balance_round_robin(VALUE self)
+{
+    CassandraCluster *cassandra_cluster;
+
+    GET_CLUSTER(self, cassandra_cluster);
+    cass_cluster_set_load_balance_round_robin(cassandra_cluster->cluster);
+
+    return self;
+}
+
+/**
+ * Configures the cluster to use DC-aware load balancing.
+ * For each query, all live nodes in a primary 'local' DC are tried first,
+ * followed by any node from other DCs.
+ *
+ * @param local_dc [String] The primary data center to try first.
+ * @return [Cassandra::Cluster] self.
+ * @raise [ArgumentError] If an invalid data center name was given.
+ */
+static VALUE cluster_load_balance_dc_aware(VALUE self, VALUE local_dc)
+{
+    CassandraCluster *cassandra_cluster;
+
+    GET_CLUSTER(self, cassandra_cluster);
+    // The 3rd and 4th parameters (used_hosts_per_remote_dc and
+    // allow_remote_dcs_for_local_cl) are deprecated in driver 2.16, so they
+    // are fixed to 0/cass_false and not exposed to Ruby.
+    cluster_check_error(cass_cluster_set_load_balance_dc_aware(cassandra_cluster->cluster, StringValueCStr(local_dc), 0, cass_false), "load_balance_dc_aware");
+
+    return self;
+}
+
+/**
+ * Configures the cluster to use token-aware request routing or not.
+ * Default is +true+ (enabled).
+ *
+ * @param enabled [Boolean] Whether to enable token-aware routing.
+ * @return [Cassandra::Cluster] self.
+ */
+static VALUE cluster_token_aware_routing(VALUE self, VALUE enabled)
+{
+    CassandraCluster *cassandra_cluster;
+
+    GET_CLUSTER(self, cassandra_cluster);
+    cass_cluster_set_token_aware_routing(cassandra_cluster->cluster, RTEST(enabled) ? cass_true : cass_false);
+
+    return self;
+}
+
+/**
+ * Configures the cluster to use latency-aware request routing or not.
+ * Default is +false+ (disabled).
+ *
+ * @param enabled [Boolean] Whether to enable latency-aware routing.
+ * @return [Cassandra::Cluster] self.
+ */
+static VALUE cluster_latency_aware_routing(VALUE self, VALUE enabled)
+{
+    CassandraCluster *cassandra_cluster;
+
+    GET_CLUSTER(self, cassandra_cluster);
+    cass_cluster_set_latency_aware_routing(cassandra_cluster->cluster, RTEST(enabled) ? cass_true : cass_false);
+
+    return self;
+}
+
+/**
+ * Enables/Disables retrieving and updating schema metadata. Disabling this
+ * can be useful to improve startup performance, but it means that
+ * 'Session#schema_metadata'-like features will not work.
+ * Default is +true+ (enabled).
+ *
+ * @param enabled [Boolean] Whether to keep schema metadata synchronized.
+ * @return [Cassandra::Cluster] self.
+ */
+static VALUE cluster_use_schema(VALUE self, VALUE enabled)
+{
+    CassandraCluster *cassandra_cluster;
+
+    GET_CLUSTER(self, cassandra_cluster);
+    cass_cluster_set_use_schema(cassandra_cluster->cluster, RTEST(enabled) ? cass_true : cass_false);
 
     return self;
 }
@@ -333,6 +611,20 @@ void Init_cluster(void)
     rb_define_method(cCluster, "credentials", cluster_credentials, 2);
     rb_define_method(cCluster, "consistency", cluster_consistency, 1);
     rb_define_method(cCluster, "serial_consistency", cluster_serial_consistency, 1);
+    rb_define_method(cCluster, "num_threads_io", cluster_num_threads_io, 1);
+    rb_define_method(cCluster, "queue_size_io", cluster_queue_size_io, 1);
+    rb_define_method(cCluster, "core_connections_per_host", cluster_core_connections_per_host, 1);
+    rb_define_method(cCluster, "constant_reconnect", cluster_constant_reconnect, 1);
+    rb_define_method(cCluster, "exponential_reconnect", cluster_exponential_reconnect, 2);
+    rb_define_method(cCluster, "tcp_nodelay", cluster_tcp_nodelay, 1);
+    rb_define_method(cCluster, "tcp_keepalive", cluster_tcp_keepalive, 2);
+    rb_define_method(cCluster, "connection_heartbeat_interval", cluster_connection_heartbeat_interval, 1);
+    rb_define_method(cCluster, "connection_idle_timeout", cluster_connection_idle_timeout, 1);
+    rb_define_method(cCluster, "load_balance_round_robin", cluster_load_balance_round_robin, 0);
+    rb_define_method(cCluster, "load_balance_dc_aware", cluster_load_balance_dc_aware, 1);
+    rb_define_method(cCluster, "token_aware_routing", cluster_token_aware_routing, 1);
+    rb_define_method(cCluster, "latency_aware_routing", cluster_latency_aware_routing, 1);
+    rb_define_method(cCluster, "use_schema", cluster_use_schema, 1);
 
     rb_define_const(cCluster, "PROTOCOL_VERSION_V1", INT2NUM(CASS_PROTOCOL_VERSION_V1));
     rb_define_const(cCluster, "PROTOCOL_VERSION_V2", INT2NUM(CASS_PROTOCOL_VERSION_V2));
