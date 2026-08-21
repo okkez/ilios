@@ -246,6 +246,49 @@ static VALUE cluster_credentials(VALUE self, VALUE username, VALUE password)
     return self;
 }
 
+static void cluster_check_error(CassError error, const char *name)
+{
+    if (error != CASS_OK) {
+        rb_raise(rb_eArgError, "Invalid %s: %s", name, cass_error_desc(error));
+    }
+}
+
+/**
+ * Sets the default consistency level of the statement.
+ * Default is +CONSISTENCY_LOCAL_ONE+.
+ *
+ * @param consistency [Integer] A consistency level.
+ * @return [Cassandra::Cluster] self.
+ * @raise [ArgumentError] If an invalid consistency level was given.
+ */
+static VALUE cluster_consistency(VALUE self, VALUE consistency)
+{
+    CassandraCluster *cassandra_cluster;
+
+    GET_CLUSTER(self, cassandra_cluster);
+    cluster_check_error(cass_cluster_set_consistency(cassandra_cluster->cluster, (CassConsistency)NUM2INT(consistency)), "consistency");
+
+    return self;
+}
+
+/**
+ * Sets the default serial consistency level of the statement.
+ * Default is +CONSISTENCY_ANY+.
+ *
+ * @param consistency [Integer] A serial consistency level.
+ * @return [Cassandra::Cluster] self.
+ * @raise [ArgumentError] If an invalid consistency level was given.
+ */
+static VALUE cluster_serial_consistency(VALUE self, VALUE consistency)
+{
+    CassandraCluster *cassandra_cluster;
+
+    GET_CLUSTER(self, cassandra_cluster);
+    cluster_check_error(cass_cluster_set_serial_consistency(cassandra_cluster->cluster, (CassConsistency)NUM2INT(consistency)), "serial_consistency");
+
+    return self;
+}
+
 static void cluster_mark(void *ptr)
 {
     CassandraCluster *cassandra_cluster = (CassandraCluster *)ptr;
@@ -288,6 +331,8 @@ void Init_cluster(void)
     rb_define_method(cCluster, "resolve_timeout", cluster_resolve_timeout, 1);
     rb_define_method(cCluster, "constant_speculative_execution_policy", cluster_constant_speculative_execution_policy, 2);
     rb_define_method(cCluster, "credentials", cluster_credentials, 2);
+    rb_define_method(cCluster, "consistency", cluster_consistency, 1);
+    rb_define_method(cCluster, "serial_consistency", cluster_serial_consistency, 1);
 
     rb_define_const(cCluster, "PROTOCOL_VERSION_V1", INT2NUM(CASS_PROTOCOL_VERSION_V1));
     rb_define_const(cCluster, "PROTOCOL_VERSION_V2", INT2NUM(CASS_PROTOCOL_VERSION_V2));
@@ -296,4 +341,16 @@ void Init_cluster(void)
     rb_define_const(cCluster, "PROTOCOL_VERSION_V5", INT2NUM(CASS_PROTOCOL_VERSION_V5));
     rb_define_const(cCluster, "PROTOCOL_VERSION_DSEV1", INT2NUM(CASS_PROTOCOL_VERSION_DSEV1));
     rb_define_const(cCluster, "PROTOCOL_VERSION_DSEV2", INT2NUM(CASS_PROTOCOL_VERSION_DSEV2));
+
+    rb_define_const(cCluster, "CONSISTENCY_ANY", INT2NUM(CASS_CONSISTENCY_ANY));
+    rb_define_const(cCluster, "CONSISTENCY_ONE", INT2NUM(CASS_CONSISTENCY_ONE));
+    rb_define_const(cCluster, "CONSISTENCY_TWO", INT2NUM(CASS_CONSISTENCY_TWO));
+    rb_define_const(cCluster, "CONSISTENCY_THREE", INT2NUM(CASS_CONSISTENCY_THREE));
+    rb_define_const(cCluster, "CONSISTENCY_QUORUM", INT2NUM(CASS_CONSISTENCY_QUORUM));
+    rb_define_const(cCluster, "CONSISTENCY_ALL", INT2NUM(CASS_CONSISTENCY_ALL));
+    rb_define_const(cCluster, "CONSISTENCY_LOCAL_QUORUM", INT2NUM(CASS_CONSISTENCY_LOCAL_QUORUM));
+    rb_define_const(cCluster, "CONSISTENCY_EACH_QUORUM", INT2NUM(CASS_CONSISTENCY_EACH_QUORUM));
+    rb_define_const(cCluster, "CONSISTENCY_SERIAL", INT2NUM(CASS_CONSISTENCY_SERIAL));
+    rb_define_const(cCluster, "CONSISTENCY_LOCAL_SERIAL", INT2NUM(CASS_CONSISTENCY_LOCAL_SERIAL));
+    rb_define_const(cCluster, "CONSISTENCY_LOCAL_ONE", INT2NUM(CASS_CONSISTENCY_LOCAL_ONE));
 }

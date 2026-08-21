@@ -77,6 +77,23 @@ class ClusterTest < Minitest::Test
     assert_kind_of(Ilios::Cassandra::Session, cluster.connect)
   end
 
+  def test_consistency
+    cluster = Ilios::Cassandra::Cluster.new
+
+    assert_raises(TypeError) { cluster.consistency(Object.new) }
+    # CASS_CONSISTENCY_UNKNOWN (0xFFFF) is the only value the driver rejects
+    assert_raises(ArgumentError) { cluster.consistency(0xFFFF) }
+    assert_kind_of(Ilios::Cassandra::Cluster, cluster.consistency(Ilios::Cassandra::Cluster::CONSISTENCY_QUORUM))
+  end
+
+  def test_serial_consistency
+    cluster = Ilios::Cassandra::Cluster.new
+
+    assert_raises(TypeError) { cluster.serial_consistency(Object.new) }
+    assert_raises(ArgumentError) { cluster.serial_consistency(0xFFFF) }
+    assert_kind_of(Ilios::Cassandra::Cluster, cluster.serial_consistency(Ilios::Cassandra::Cluster::CONSISTENCY_LOCAL_SERIAL))
+  end
+
   def test_connect_with_correct_credentials
     skip('auth-enabled Cassandra is not available') unless CASSANDRA_AUTH_AVAILABLE
 
