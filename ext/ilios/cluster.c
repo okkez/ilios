@@ -275,6 +275,16 @@ static cass_uint64_t cluster_value_to_uint64(VALUE value)
     return NUM2ULL(value);
 }
 
+// The driver only rejects CASS_CONSISTENCY_UNKNOWN at set time; any other
+// out-of-range value is accepted and later fails every query with an
+// opaque protocol error, so validate the range here.
+static void cluster_check_consistency(long value, const char *name)
+{
+    if (value < CASS_CONSISTENCY_ANY || value > CASS_CONSISTENCY_LOCAL_ONE) {
+        rb_raise(rb_eArgError, "Invalid %s: %ld", name, value);
+    }
+}
+
 /**
  * Sets the default consistency level of the statement.
  * Default is +CONSISTENCY_LOCAL_ONE+.
@@ -286,9 +296,12 @@ static cass_uint64_t cluster_value_to_uint64(VALUE value)
 static VALUE cluster_consistency(VALUE self, VALUE consistency)
 {
     CassandraCluster *cassandra_cluster;
+    long consistency_value = NUM2LONG(consistency);
+
+    cluster_check_consistency(consistency_value, "consistency");
 
     GET_CLUSTER(self, cassandra_cluster);
-    cluster_check_error(cass_cluster_set_consistency(cassandra_cluster->cluster, (CassConsistency)NUM2INT(consistency)), "consistency");
+    cluster_check_error(cass_cluster_set_consistency(cassandra_cluster->cluster, (CassConsistency)consistency_value), "consistency");
 
     return self;
 }
@@ -304,9 +317,12 @@ static VALUE cluster_consistency(VALUE self, VALUE consistency)
 static VALUE cluster_serial_consistency(VALUE self, VALUE consistency)
 {
     CassandraCluster *cassandra_cluster;
+    long consistency_value = NUM2LONG(consistency);
+
+    cluster_check_consistency(consistency_value, "serial_consistency");
 
     GET_CLUSTER(self, cassandra_cluster);
-    cluster_check_error(cass_cluster_set_serial_consistency(cassandra_cluster->cluster, (CassConsistency)NUM2INT(consistency)), "serial_consistency");
+    cluster_check_error(cass_cluster_set_serial_consistency(cassandra_cluster->cluster, (CassConsistency)consistency_value), "serial_consistency");
 
     return self;
 }
