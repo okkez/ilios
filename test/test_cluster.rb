@@ -77,6 +77,38 @@ class ClusterTest < Minitest::Test
     assert_kind_of(Ilios::Cassandra::Session, cluster.connect)
   end
 
+  def test_connect_with_correct_credentials
+    skip('auth-enabled Cassandra is not available') unless CASSANDRA_AUTH_AVAILABLE
+
+    cluster = Ilios::Cassandra::Cluster.new
+    cluster.hosts([CASSANDRA_HOST])
+    cluster.port(CASSANDRA_AUTH_PORT)
+    cluster.credentials('cassandra', 'cassandra')
+
+    assert_kind_of(Ilios::Cassandra::Session, cluster.connect)
+  end
+
+  def test_connect_with_wrong_credentials
+    skip('auth-enabled Cassandra is not available') unless CASSANDRA_AUTH_AVAILABLE
+
+    cluster = Ilios::Cassandra::Cluster.new
+    cluster.hosts([CASSANDRA_HOST])
+    cluster.port(CASSANDRA_AUTH_PORT)
+    cluster.credentials('cassandra', 'wrong-password')
+
+    assert_raises(Ilios::Cassandra::ConnectError) { cluster.connect }
+  end
+
+  def test_connect_without_credentials_to_auth_node
+    skip('auth-enabled Cassandra is not available') unless CASSANDRA_AUTH_AVAILABLE
+
+    cluster = Ilios::Cassandra::Cluster.new
+    cluster.hosts([CASSANDRA_HOST])
+    cluster.port(CASSANDRA_AUTH_PORT)
+
+    assert_raises(Ilios::Cassandra::ConnectError) { cluster.connect }
+  end
+
   def test_connect
     cluster = Ilios::Cassandra::Cluster.new
 

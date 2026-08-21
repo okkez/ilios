@@ -6,6 +6,35 @@ require 'minitest/autorun'
 require 'securerandom'
 
 CASSANDRA_HOST = ENV['CASSANDRA_HOST'] || '127.0.0.1'
+CASSANDRA_AUTH_PORT = Integer(ENV['CASSANDRA_AUTH_PORT'] || 9043)
+
+# Returns true when the auth-enabled node is reachable AND its default
+# superuser (cassandra/cassandra) is ready to authenticate. The superuser is
+# created ~10 seconds after the node boots, so retry for a while before
+# giving up. When this returns false, authentication tests are skipped.
+def wait_for_auth_cassandra
+  require('socket')
+  begin
+    TCPSocket.new(CASSANDRA_HOST, CASSANDRA_AUTH_PORT).close
+  rescue SystemCallError
+    return false
+  end
+
+  deadline = Time.now + 90
+  begin
+    cluster = Ilios::Cassandra::Cluster.new
+    cluster.hosts([CASSANDRA_HOST])
+    cluster.port(CASSANDRA_AUTH_PORT)
+    cluster.credentials('cassandra', 'cassandra')
+    cluster.connect
+    true
+  rescue Ilios::Cassandra::ConnectError
+    return false if Time.now > deadline
+
+    sleep(5)
+    retry
+  end
+end
 
 module Ilios
   module Cassandra
@@ -82,6 +111,8 @@ end
 at_exit do
   verify_gc_compaction
 end
+
+CASSANDRA_AUTH_AVAILABLE = wait_for_auth_cassandra
 
 prepare_keyspace
 prepare_table
