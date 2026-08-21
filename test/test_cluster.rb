@@ -86,6 +86,8 @@ class ClusterTest < Minitest::Test
     assert_raises(ArgumentError) { cluster.consistency(-1) }
     assert_raises(ArgumentError) { cluster.consistency(99) }
     assert_kind_of(Ilios::Cassandra::Cluster, cluster.consistency(Ilios::Cassandra::Cluster::CONSISTENCY_QUORUM))
+    assert_raises(ArgumentError) { cluster.consistency(:foo) }
+    assert_kind_of(Ilios::Cassandra::Cluster, cluster.consistency(:quorum))
   end
 
   def test_serial_consistency
@@ -96,6 +98,8 @@ class ClusterTest < Minitest::Test
     assert_raises(ArgumentError) { cluster.serial_consistency(-1) }
     assert_raises(ArgumentError) { cluster.serial_consistency(99) }
     assert_kind_of(Ilios::Cassandra::Cluster, cluster.serial_consistency(Ilios::Cassandra::Cluster::CONSISTENCY_LOCAL_SERIAL))
+    assert_raises(ArgumentError) { cluster.serial_consistency(:foo) }
+    assert_kind_of(Ilios::Cassandra::Cluster, cluster.serial_consistency(:local_serial))
   end
 
   def test_connect_with_correct_credentials

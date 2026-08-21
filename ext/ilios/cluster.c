@@ -285,23 +285,61 @@ static void cluster_check_consistency(long value, const char *name)
     }
 }
 
+static const struct {
+    const char *name;
+    CassConsistency consistency;
+} cluster_consistency_symbols[] = {
+    { "any", CASS_CONSISTENCY_ANY },
+    { "one", CASS_CONSISTENCY_ONE },
+    { "two", CASS_CONSISTENCY_TWO },
+    { "three", CASS_CONSISTENCY_THREE },
+    { "quorum", CASS_CONSISTENCY_QUORUM },
+    { "all", CASS_CONSISTENCY_ALL },
+    { "local_quorum", CASS_CONSISTENCY_LOCAL_QUORUM },
+    { "each_quorum", CASS_CONSISTENCY_EACH_QUORUM },
+    { "serial", CASS_CONSISTENCY_SERIAL },
+    { "local_serial", CASS_CONSISTENCY_LOCAL_SERIAL },
+    { "local_one", CASS_CONSISTENCY_LOCAL_ONE },
+};
+
+// Accepts either an Integer consistency constant or a Symbol such as
+// +:quorum+/+:local_serial+ naming one of the CONSISTENCY_* constants.
+static CassConsistency cluster_value_to_consistency(VALUE value, const char *name)
+{
+    long v;
+
+    if (SYMBOL_P(value)) {
+        ID id = rb_sym2id(value);
+
+        for (size_t i = 0; i < sizeof(cluster_consistency_symbols) / sizeof(cluster_consistency_symbols[0]); i++) {
+            if (id == rb_intern(cluster_consistency_symbols[i].name)) {
+                return cluster_consistency_symbols[i].consistency;
+            }
+        }
+        rb_raise(rb_eArgError, "Invalid %s: %"PRIsVALUE"", name, value);
+    }
+
+    v = NUM2LONG(value);
+    cluster_check_consistency(v, name);
+    return (CassConsistency)v;
+}
+
 /**
  * Sets the default consistency level of the statement.
  * Default is +CONSISTENCY_LOCAL_ONE+.
  *
- * @param consistency [Integer] A consistency level.
+ * @param consistency [Integer, Symbol] A consistency level.
+ *   Symbols such as +:quorum+ or +:local_serial+ are also accepted.
  * @return [Cassandra::Cluster] self.
  * @raise [ArgumentError] If an invalid consistency level was given.
  */
 static VALUE cluster_consistency(VALUE self, VALUE consistency)
 {
     CassandraCluster *cassandra_cluster;
-    long consistency_value = NUM2LONG(consistency);
-
-    cluster_check_consistency(consistency_value, "consistency");
+    CassConsistency consistency_value = cluster_value_to_consistency(consistency, "consistency");
 
     GET_CLUSTER(self, cassandra_cluster);
-    cluster_check_error(cass_cluster_set_consistency(cassandra_cluster->cluster, (CassConsistency)consistency_value), "consistency");
+    cluster_check_error(cass_cluster_set_consistency(cassandra_cluster->cluster, consistency_value), "consistency");
 
     return self;
 }
@@ -310,19 +348,18 @@ static VALUE cluster_consistency(VALUE self, VALUE consistency)
  * Sets the default serial consistency level of the statement.
  * Default is +CONSISTENCY_ANY+.
  *
- * @param consistency [Integer] A serial consistency level.
+ * @param consistency [Integer, Symbol] A serial consistency level.
+ *   Symbols such as +:quorum+ or +:local_serial+ are also accepted.
  * @return [Cassandra::Cluster] self.
  * @raise [ArgumentError] If an invalid consistency level was given.
  */
 static VALUE cluster_serial_consistency(VALUE self, VALUE consistency)
 {
     CassandraCluster *cassandra_cluster;
-    long consistency_value = NUM2LONG(consistency);
-
-    cluster_check_consistency(consistency_value, "serial_consistency");
+    CassConsistency consistency_value = cluster_value_to_consistency(consistency, "serial_consistency");
 
     GET_CLUSTER(self, cassandra_cluster);
-    cluster_check_error(cass_cluster_set_serial_consistency(cassandra_cluster->cluster, (CassConsistency)consistency_value), "serial_consistency");
+    cluster_check_error(cass_cluster_set_serial_consistency(cassandra_cluster->cluster, consistency_value), "serial_consistency");
 
     return self;
 }
