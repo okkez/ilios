@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Ilios
-  VERSION = '1.0.6'
+  VERSION = '1.1.0'
   public_constant :VERSION
 
   CASSANDRA_CPP_DRIVER_VERSION = '2.17.1'

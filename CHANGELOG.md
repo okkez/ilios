@@ -1,6 +1,6 @@
 # Change Log
 
-## Unreleased
+## 1.1.0
 
 - Support Cassandra collection types (`list`, `set` and `map`, including nested collections). `list` maps to `Array`, `set` to `Set`, `map` to `Hash` (#28)
 - Accept `Symbol` values for `text`/`ascii`/`varchar` columns and collection elements (#28)
