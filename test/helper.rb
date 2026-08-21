@@ -20,7 +20,7 @@ def wait_for_auth_cassandra
     return false
   end
 
-  deadline = Time.now + 90
+  deadline = Time.now + 180
   begin
     cluster = Ilios::Cassandra::Cluster.new
     cluster.hosts([CASSANDRA_HOST])
@@ -28,7 +28,7 @@ def wait_for_auth_cassandra
     cluster.credentials('cassandra', 'cassandra')
     cluster.connect
     true
-  rescue Ilios::Cassandra::ConnectError
+  rescue StandardError
     return false if Time.now > deadline
 
     sleep(5)
@@ -113,6 +113,8 @@ at_exit do
 end
 
 CASSANDRA_AUTH_AVAILABLE = wait_for_auth_cassandra
+
+raise StandardError, 'auth-enabled Cassandra (CASSANDRA_AUTH_PORT) is not available on CI' if ENV['CI'] && !CASSANDRA_AUTH_AVAILABLE
 
 prepare_keyspace
 prepare_table
