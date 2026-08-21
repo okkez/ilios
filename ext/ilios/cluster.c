@@ -141,7 +141,7 @@ static VALUE cluster_keyspace(VALUE self, VALUE keyspace)
  * Sets the protocol version. The driver will automatically downgrade to the lowest supported protocol version.
  * Default is +PROTOCOL_VERSION_V4+.
  *
- * @param timeout_ms [Integer] A connect timeout in milliseconds.
+ * @param version [Integer] A protocol version.
  * @return [Cassandra::Cluster] self.
  */
 static VALUE cluster_protocol_version(VALUE self, VALUE version)
@@ -334,6 +334,7 @@ static VALUE cluster_serial_consistency(VALUE self, VALUE consistency)
  * @param num_threads [Integer] A number of IO threads.
  * @return [Cassandra::Cluster] self.
  * @raise [ArgumentError] If zero was given.
+ * @raise [RangeError] If a negative value was given.
  */
 static VALUE cluster_num_threads_io(VALUE self, VALUE num_threads)
 {
@@ -352,6 +353,7 @@ static VALUE cluster_num_threads_io(VALUE self, VALUE num_threads)
  * @param queue_size [Integer] A queue size.
  * @return [Cassandra::Cluster] self.
  * @raise [ArgumentError] If zero was given.
+ * @raise [RangeError] If a negative value was given.
  */
 static VALUE cluster_queue_size_io(VALUE self, VALUE queue_size)
 {
@@ -370,6 +372,7 @@ static VALUE cluster_queue_size_io(VALUE self, VALUE queue_size)
  * @param num_connections [Integer] A number of connections.
  * @return [Cassandra::Cluster] self.
  * @raise [ArgumentError] If zero was given.
+ * @raise [RangeError] If a negative value was given.
  */
 static VALUE cluster_core_connections_per_host(VALUE self, VALUE num_connections)
 {
@@ -388,6 +391,7 @@ static VALUE cluster_core_connections_per_host(VALUE self, VALUE num_connections
  *
  * @param delay_ms [Integer] A delay in milliseconds.
  * @return [Cassandra::Cluster] self.
+ * @raise [RangeError] If a negative value was given.
  */
 static VALUE cluster_constant_reconnect(VALUE self, VALUE delay_ms)
 {
@@ -409,6 +413,7 @@ static VALUE cluster_constant_reconnect(VALUE self, VALUE delay_ms)
  * @return [Cassandra::Cluster] self.
  * @raise [ArgumentError] If the base delay is 1 or less, the maximum delay is 1 or less,
  *   or the maximum delay is less than the base delay.
+ * @raise [RangeError] If a negative value was given.
  */
 static VALUE cluster_exponential_reconnect(VALUE self, VALUE base_delay_ms, VALUE max_delay_ms)
 {
@@ -439,11 +444,12 @@ static VALUE cluster_tcp_nodelay(VALUE self, VALUE enabled)
 
 /**
  * Enables/Disables TCP keep-alive.
- * Default is disabled.
+ * The default follows the driver.
  *
  * @param enabled [Boolean] Whether to enable TCP keep-alive.
  * @param delay_secs [Integer] The initial delay in seconds. Ignored when disabled.
  * @return [Cassandra::Cluster] self.
+ * @raise [RangeError] If a negative value was given.
  */
 static VALUE cluster_tcp_keepalive(VALUE self, VALUE enabled, VALUE delay_secs)
 {
@@ -463,6 +469,7 @@ static VALUE cluster_tcp_keepalive(VALUE self, VALUE enabled, VALUE delay_secs)
  *
  * @param interval_secs [Integer] An interval in seconds. +0+ disables heartbeat messages.
  * @return [Cassandra::Cluster] self.
+ * @raise [RangeError] If a negative value was given.
  */
 static VALUE cluster_connection_heartbeat_interval(VALUE self, VALUE interval_secs)
 {
@@ -481,6 +488,7 @@ static VALUE cluster_connection_heartbeat_interval(VALUE self, VALUE interval_se
  *
  * @param timeout_secs [Integer] A timeout in seconds.
  * @return [Cassandra::Cluster] self.
+ * @raise [RangeError] If a negative value was given.
  */
 static VALUE cluster_connection_idle_timeout(VALUE self, VALUE timeout_secs)
 {
