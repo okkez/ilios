@@ -12,8 +12,10 @@ VALUE eExecutionError;
 VALUE eStatementError;
 
 VALUE cSizedQueue;
+VALUE cSet;
 
 VALUE id_to_time;
+VALUE id_to_a;
 VALUE id_new;
 VALUE id_push;
 VALUE id_pop;
@@ -88,8 +90,12 @@ void Init_ilios(void)
     eStatementError = rb_define_class_under(mCassandra, "StatementError", rb_eStandardError);
 
     cSizedQueue = rb_const_get(rb_cThread, rb_intern("SizedQueue"));
+    rb_require("set");
+    cSet = rb_const_get(rb_cObject, rb_intern("Set"));
+    rb_gc_register_mark_object(cSet);
 
     id_to_time = rb_intern("to_time");
+    id_to_a = rb_intern("to_a");
     id_new = rb_intern("new");
     id_push = rb_intern("push");
     id_pop = rb_intern("pop");

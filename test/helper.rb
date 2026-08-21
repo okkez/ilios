@@ -42,6 +42,11 @@ def prepare_table
 
   session = cluster.connect
   statement = session.prepare(<<~CQL)
+    DROP TABLE IF EXISTS ilios.test;
+  CQL
+  session.execute(statement)
+
+  statement = session.prepare(<<~CQL)
     CREATE TABLE IF NOT EXISTS ilios.test (
       id bigint,
 
@@ -55,6 +60,13 @@ def prepare_table
       text text,
       timestamp timestamp,
       uuid uuid,
+      list list<int>,
+      "set" set<text>,
+      map map<text, bigint>,
+      nested_list list<frozen<list<int>>>,
+      nested_map map<text, frozen<set<int>>>,
+      map_uuid_boolean map<uuid, boolean>,
+      list_timestamp list<timestamp>,
       PRIMARY KEY (id)
     ) WITH compaction = { 'class' : 'LeveledCompactionStrategy' }
     AND gc_grace_seconds = 691200;
@@ -63,15 +75,8 @@ def prepare_table
 end
 
 def verify_gc_compaction
-  # This method was added in Ruby 3.0.0. Calling it this way asks the GC to
-  # move objects around, helping to find object movement bugs.
-  return unless defined?(GC.verify_compaction_references) == 'method'
-
-  if Gem::Version.new(RUBY_VERSION) >= Gem::Version.new('3.2.0')
-    GC.verify_compaction_references(expand_heap: true, toward: :empty)
-  else
-    GC.verify_compaction_references(double_heap: true, toward: :empty)
-  end
+  # Asks the GC to move objects around, helping to find object movement bugs.
+  GC.verify_compaction_references(expand_heap: true, toward: :empty)
 end
 
 at_exit do
