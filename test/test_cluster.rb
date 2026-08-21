@@ -63,6 +63,20 @@ class ClusterTest < Minitest::Test
     assert_kind_of(Ilios::Cassandra::Cluster, cluster.constant_speculative_execution_policy(10_000, 2))
   end
 
+  def test_credentials
+    cluster = Ilios::Cassandra::Cluster.new
+
+    assert_raises(TypeError) { cluster.credentials(Object.new, 'password') }
+    assert_raises(TypeError) { cluster.credentials('username', Object.new) }
+    assert_kind_of(Ilios::Cassandra::Cluster, cluster.credentials('username', 'password'))
+
+    # Credentials are ignored by a node using AllowAllAuthenticator;
+    # setting them must not break the connection.
+    cluster.hosts([CASSANDRA_HOST])
+
+    assert_kind_of(Ilios::Cassandra::Session, cluster.connect)
+  end
+
   def test_connect
     cluster = Ilios::Cassandra::Cluster.new
 

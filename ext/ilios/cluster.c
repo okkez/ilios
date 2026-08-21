@@ -226,6 +226,26 @@ static VALUE cluster_constant_speculative_execution_policy(VALUE self, VALUE con
     return self;
 }
 
+/**
+ * Sets credentials for plain text authentication.
+ *
+ * @param username [String] A username.
+ * @param password [String] A password.
+ * @return [Cassandra::Cluster] self.
+ */
+static VALUE cluster_credentials(VALUE self, VALUE username, VALUE password)
+{
+    CassandraCluster *cassandra_cluster;
+
+    GET_CLUSTER(self, cassandra_cluster);
+    // The driver copies both strings into its own memory
+    // (cluster_config.cpp: cass_cluster_set_credentials_n), so the Ruby
+    // strings do not need to be retained.
+    cass_cluster_set_credentials(cassandra_cluster->cluster, StringValueCStr(username), StringValueCStr(password));
+
+    return self;
+}
+
 static void cluster_mark(void *ptr)
 {
     CassandraCluster *cassandra_cluster = (CassandraCluster *)ptr;
@@ -267,6 +287,7 @@ void Init_cluster(void)
     rb_define_method(cCluster, "request_timeout", cluster_request_timeout, 1);
     rb_define_method(cCluster, "resolve_timeout", cluster_resolve_timeout, 1);
     rb_define_method(cCluster, "constant_speculative_execution_policy", cluster_constant_speculative_execution_policy, 2);
+    rb_define_method(cCluster, "credentials", cluster_credentials, 2);
 
     rb_define_const(cCluster, "PROTOCOL_VERSION_V1", INT2NUM(CASS_PROTOCOL_VERSION_V1));
     rb_define_const(cCluster, "PROTOCOL_VERSION_V2", INT2NUM(CASS_PROTOCOL_VERSION_V2));
