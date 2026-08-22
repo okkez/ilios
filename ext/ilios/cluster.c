@@ -349,15 +349,25 @@ static VALUE cluster_consistency(VALUE self, VALUE consistency)
  * Sets the default serial consistency level of the statement.
  * Default is +CONSISTENCY_ANY+.
  *
- * @param consistency [Integer, Symbol] A serial consistency level.
- *   Symbols such as +:quorum+ or +:local_serial+ are also accepted.
+ * @param consistency [Integer, Symbol] A serial consistency level. Only
+ *   +CONSISTENCY_SERIAL+/+CONSISTENCY_LOCAL_SERIAL+ (or +:serial+/+:local_serial+)
+ *   are accepted.
  * @return [Cassandra::Cluster] self.
- * @raise [ArgumentError] If an invalid consistency level was given.
+ * @raise [ArgumentError] If an invalid consistency level was given, or if it is
+ *   not +CONSISTENCY_SERIAL+ or +CONSISTENCY_LOCAL_SERIAL+.
  */
 static VALUE cluster_serial_consistency(VALUE self, VALUE consistency)
 {
     CassandraCluster *cassandra_cluster;
     CassConsistency consistency_value = cluster_value_to_consistency(consistency, "serial_consistency");
+
+    // Cassandra only accepts SERIAL/LOCAL_SERIAL as a serial consistency
+    // level (used for lightweight transactions); any other value passes
+    // the generic range check above but is later rejected by the server
+    // at query time with an opaque error, so validate it here.
+    if (consistency_value != CASS_CONSISTENCY_SERIAL && consistency_value != CASS_CONSISTENCY_LOCAL_SERIAL) {
+        rb_raise(rb_eArgError, "Invalid serial_consistency: %"PRIsVALUE"", consistency);
+    }
 
     GET_CLUSTER(self, cassandra_cluster);
     cluster_check_error(cass_cluster_set_serial_consistency(cassandra_cluster->cluster, consistency_value), "serial_consistency");

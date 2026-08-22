@@ -97,8 +97,15 @@ class ClusterTest < Minitest::Test
     assert_raises(ArgumentError) { cluster.serial_consistency(0xFFFF) }
     assert_raises(ArgumentError) { cluster.serial_consistency(-1) }
     assert_raises(ArgumentError) { cluster.serial_consistency(99) }
-    assert_kind_of(Ilios::Cassandra::Cluster, cluster.serial_consistency(Ilios::Cassandra::Cluster::CONSISTENCY_LOCAL_SERIAL))
     assert_raises(ArgumentError) { cluster.serial_consistency(:foo) }
+    # Cassandra only accepts SERIAL / LOCAL_SERIAL as serial consistency
+    # levels; anything else is rejected even though it is otherwise a
+    # valid consistency level.
+    assert_raises(ArgumentError) { cluster.serial_consistency(Ilios::Cassandra::Cluster::CONSISTENCY_QUORUM) }
+    assert_raises(ArgumentError) { cluster.serial_consistency(:quorum) }
+    assert_kind_of(Ilios::Cassandra::Cluster, cluster.serial_consistency(Ilios::Cassandra::Cluster::CONSISTENCY_SERIAL))
+    assert_kind_of(Ilios::Cassandra::Cluster, cluster.serial_consistency(Ilios::Cassandra::Cluster::CONSISTENCY_LOCAL_SERIAL))
+    assert_kind_of(Ilios::Cassandra::Cluster, cluster.serial_consistency(:serial))
     assert_kind_of(Ilios::Cassandra::Cluster, cluster.serial_consistency(:local_serial))
   end
 
