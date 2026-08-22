@@ -339,6 +339,7 @@ static CassConsistency cluster_value_to_consistency(VALUE value, const char *nam
  *   Symbols such as +:quorum+ or +:local_serial+ are also accepted.
  * @return [Cassandra::Cluster] self.
  * @raise [ArgumentError] If an invalid consistency level was given.
+ * @raise [RangeError] If the value does not fit in a C long.
  */
 static VALUE cluster_consistency(VALUE self, VALUE consistency)
 {
@@ -361,6 +362,7 @@ static VALUE cluster_consistency(VALUE self, VALUE consistency)
  * @return [Cassandra::Cluster] self.
  * @raise [ArgumentError] If an invalid consistency level was given, or if it is
  *   not +CONSISTENCY_SERIAL+ or +CONSISTENCY_LOCAL_SERIAL+.
+ * @raise [RangeError] If the value does not fit in a C long.
  */
 static VALUE cluster_serial_consistency(VALUE self, VALUE consistency)
 {
@@ -441,7 +443,7 @@ static VALUE cluster_core_connections_per_host(VALUE self, VALUE num_connections
 /**
  * Configures the cluster to use a reconnection policy that waits a constant
  * time between each reconnection attempt.
- * Default is +2000+ milliseconds.
+ * The exponential policy is used unless this method is called.
  *
  * @param delay_ms [Integer] A delay in milliseconds.
  * @return [Cassandra::Cluster] self.
@@ -461,6 +463,8 @@ static VALUE cluster_constant_reconnect(VALUE self, VALUE delay_ms)
  * Configures the cluster to use a reconnection policy that waits
  * exponentially longer between each reconnection attempt; however
  * will maintain a constant delay once the maximum delay is reached.
+ * This is the default policy, with a base delay of +2000+ milliseconds and
+ * a maximum delay of +60000+ milliseconds.
  *
  * @param base_delay_ms [Integer] A base delay in milliseconds.
  * @param max_delay_ms [Integer] A maximum delay in milliseconds.
@@ -498,7 +502,7 @@ static VALUE cluster_tcp_nodelay(VALUE self, VALUE enabled)
 
 /**
  * Enables/Disables TCP keep-alive.
- * The default follows the driver.
+ * Default is +false+ (disabled).
  *
  * @param enabled [Boolean] Whether to enable TCP keep-alive.
  * @param delay_secs [Integer] The initial delay in seconds. Ignored when disabled.
