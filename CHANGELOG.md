@@ -1,11 +1,16 @@
 # Change Log
 
+## 1.1.1
+
+- Fix out-of-bounds read when binding a `list`/`set` whose element mutates the array while it is being converted (#31)
+- Verify the sha256 checksum of the libuv and cpp-driver archives downloaded at build time (#32)
+
 ## 1.1.0
 
 - Support Cassandra collection types (`list`, `set` and `map`, including nested collections). `list` maps to `Array`, `set` to `Set`, `map` to `Hash` (#28)
 - Accept `Symbol` values for `text`/`ascii`/`varchar` columns and collection elements (#28)
 - Require Ruby 3.4 or later (#28)
-- Fix `Ilios::Cassandra::Future#await` returning before the registered callback ran (PR #29)
+- Fix `Ilios::Cassandra::Future#await` returning before the registered callback ran (#29)
 
 ## 1.0.6
 
