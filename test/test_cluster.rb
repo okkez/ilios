@@ -130,11 +130,53 @@ class ClusterTest < Minitest::Test
     assert_kind_of(Ilios::Cassandra::Cluster, cluster.serial_consistency(:local_serial))
   end
 
+  def test_integer_option_converts_the_value_once
+    counter = Class.new do
+      attr_reader :calls
+
+      def initialize
+        @calls = 0
+      end
+
+      def to_int
+        @calls += 1
+        @calls == 1 ? 5 : -1
+      end
+    end
+
+    cluster = Ilios::Cassandra::Cluster.new
+
+    heartbeat = counter.new
+    cluster.connection_heartbeat_interval(heartbeat)
+
+    assert_equal(1, heartbeat.calls)
+
+    reconnect = counter.new
+    cluster.constant_reconnect(reconnect)
+
+    assert_equal(1, reconnect.calls)
+  end
+
+  def test_consistency_does_not_pin_unknown_symbols
+    cluster = Ilios::Cassandra::Cluster.new
+
+    GC.start
+    before = Symbol.all_symbols.size
+    1000.times do |i|
+      cluster.consistency(:"unknown_consistency_#{i}")
+    rescue ArgumentError
+      nil
+    end
+    GC.start
+
+    assert_operator(Symbol.all_symbols.size - before, :<, 100)
+  end
+
   def test_connect_with_correct_credentials
     skip('auth-enabled Cassandra is not available') unless CASSANDRA_AUTH_AVAILABLE
 
     cluster = Ilios::Cassandra::Cluster.new
-    cluster.hosts([CASSANDRA_HOST])
+    cluster.hosts([CASSANDRA_AUTH_HOST])
     cluster.port(CASSANDRA_AUTH_PORT)
     cluster.credentials('cassandra', 'cassandra')
 
@@ -145,7 +187,7 @@ class ClusterTest < Minitest::Test
     skip('auth-enabled Cassandra is not available') unless CASSANDRA_AUTH_AVAILABLE
 
     cluster = Ilios::Cassandra::Cluster.new
-    cluster.hosts([CASSANDRA_HOST])
+    cluster.hosts([CASSANDRA_AUTH_HOST])
     cluster.port(CASSANDRA_AUTH_PORT)
     cluster.credentials('cassandra', 'wrong-password')
 
@@ -156,7 +198,7 @@ class ClusterTest < Minitest::Test
     skip('auth-enabled Cassandra is not available') unless CASSANDRA_AUTH_AVAILABLE
 
     cluster = Ilios::Cassandra::Cluster.new
-    cluster.hosts([CASSANDRA_HOST])
+    cluster.hosts([CASSANDRA_AUTH_HOST])
     cluster.port(CASSANDRA_AUTH_PORT)
 
     assert_raises(Ilios::Cassandra::ConnectError) { cluster.connect }
