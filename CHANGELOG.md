@@ -1,10 +1,12 @@
 # Change Log
 
-## Unreleased
+## 1.1.2
 
 - Support username/password authentication with `Cluster#credentials` (#33)
 - Add cluster options: consistency, serial_consistency, num_threads_io, queue_size_io, core_connections_per_host, constant_reconnect, exponential_reconnect, tcp_nodelay, tcp_keepalive, connection_heartbeat_interval, connection_idle_timeout, load_balance_round_robin, load_balance_dc_aware, token_aware_routing, latency_aware_routing and use_schema (#33)
 - Accept Symbol consistency levels (e.g. `:quorum`) in `Cluster#consistency` and `Cluster#serial_consistency` (#33)
+- Fix infinite loop when binding a `list`/`set` whose element appends to the array while it is being converted (#34)
+- Fix infinite loop in `Cluster#hosts` when an element appends to the array while it is being converted (#34)
 
 ## 1.1.1
 
