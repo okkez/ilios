@@ -251,7 +251,11 @@ class ClusterTest < Minitest::Test
   def test_connect
     cluster = Ilios::Cassandra::Cluster.new
 
-    assert_raises(Ilios::Cassandra::ConnectError) { cluster.connect }
+    # deterministic connect failure: no host was configured, so this does
+    # not need the auth-enabled node and always fails the same way.
+    error = assert_raises(Ilios::Cassandra::ConnectError) { cluster.connect }
+    assert_match(/\AUnable to connect: /, error.message)
+    assert_kind_of(Integer, error.code)
 
     cluster.hosts([CASSANDRA_HOST])
 

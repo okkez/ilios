@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Yield the failure reason as an `Ilios::Cassandra::ExecutionError` to `Future#on_failure` blocks that accept an argument (#XX)
+- The synchronous API (`Session#prepare`, `Session#execute`, `Result#next_page`, `Cluster#connect`) now raises errors carrying the server-reported message and a `#code` Integer, same as `Future#on_failure` (#XX)
 
 ## 1.1.2
 

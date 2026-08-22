@@ -1,5 +1,7 @@
 #include "ilios.h"
 
+#include <string.h>
+
 VALUE mIlios;
 VALUE mCassandra;
 VALUE cCluster;
@@ -75,6 +77,31 @@ static VALUE cassandra_set_log_level(VALUE self, VALUE log_level)
     return self;
 }
 
+VALUE ilios_future_error_new(VALUE exception_class, const char *prefix, CassFuture *future)
+{
+    CassError error_code;
+    const char *message;
+    size_t message_length;
+    VALUE body;
+    VALUE full_message;
+    VALUE error;
+
+    error_code = cass_future_error_code(future);
+    cass_future_error_message(future, &message, &message_length);
+    if (message_length == 0) {
+        message = cass_error_desc(error_code);
+        message_length = strlen(message);
+    }
+
+    body = rb_str_new(message, message_length);
+    full_message = prefix ? rb_sprintf("%s: %"PRIsVALUE, prefix, body) : body;
+
+    error = rb_exc_new_str(exception_class, full_message);
+    rb_ivar_set(error, id_code, INT2NUM(error_code));
+
+    return error;
+}
+
 void Init_ilios(void)
 {
     rb_ext_ractor_safe(true);
@@ -89,9 +116,12 @@ void Init_ilios(void)
     eConnectError = rb_define_class_under(mCassandra, "ConnectError", rb_eStandardError);
     eExecutionError = rb_define_class_under(mCassandra, "ExecutionError", rb_eStandardError);
     eStatementError = rb_define_class_under(mCassandra, "StatementError", rb_eStandardError);
-    // @code is only set for errors yielded to Future#on_failure blocks;
-    // ExecutionErrors raised elsewhere via rb_raise leave #code nil.
+    // @code is only set on errors built from a CassFuture (Future#on_failure
+    // and the synchronous raise sites that go through
+    // ilios_future_error_new); ExecutionError/ConnectError raised elsewhere
+    // via plain rb_raise leave #code nil.
     rb_define_attr(eExecutionError, "code", 1, 0);
+    rb_define_attr(eConnectError, "code", 1, 0);
 
     cSizedQueue = rb_const_get(rb_cThread, rb_intern("SizedQueue"));
     rb_require("set");

@@ -1,7 +1,5 @@
 #include "ilios.h"
 
-#include <string.h>
-
 #define THREAD_MAX 5
 #define QUEUE_MAX 100
 
@@ -139,20 +137,7 @@ static void future_result_failure_yield(CassandraFuture *cassandra_future)
 {
     if (cassandra_future->on_failure_block) {
         if (rb_proc_arity(cassandra_future->on_failure_block)) {
-            VALUE error;
-            CassError error_code;
-            const char *message;
-            size_t message_length;
-
-            error_code = cass_future_error_code(cassandra_future->future);
-            cass_future_error_message(cassandra_future->future, &message, &message_length);
-            if (message_length == 0) {
-                message = cass_error_desc(error_code);
-                message_length = strlen(message);
-            }
-
-            error = rb_exc_new(eExecutionError, message, message_length);
-            rb_ivar_set(error, id_code, INT2NUM(error_code));
+            VALUE error = ilios_future_error_new(eExecutionError, NULL, cassandra_future->future);
 
             rb_proc_call_with_block(cassandra_future->on_failure_block, 1, &error, Qnil);
         } else {

@@ -146,5 +146,14 @@ extern void statement_default_config(CassandraStatement *cassandra_statement);
 extern CassStatement *statement_build_for_execution(CassandraStatement *cassandra_statement);
 extern void result_await(CassandraResult *cassandra_result);
 
+// Builds an exception of `exception_class` from `future`'s error: the
+// driver's server-reported message (falling back to the generic
+// cass_error_desc when the driver returns none), formatted as
+// "<prefix>: <message>" when `prefix` is non-NULL, or the bare message when
+// `prefix` is NULL. Sets `@code` (readable via #code) to the CassError
+// value. `future` must still be alive (not yet cass_future_free'd) when this
+// is called.
+extern VALUE ilios_future_error_new(VALUE exception_class, const char *prefix, CassFuture *future);
+
 
 #endif // ILIOS_H

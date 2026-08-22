@@ -5,7 +5,11 @@ require_relative 'helper'
 class SessionTest < Minitest::Test
   def test_prepare
     # invalid query
-    assert_raises(Ilios::Cassandra::ExecutionError) { Ilios::Cassandra.session.prepare('foo') }
+    error = assert_raises(Ilios::Cassandra::ExecutionError) { Ilios::Cassandra.session.prepare('foo') }
+    assert_match(/\AUnable to prepare query: /, error.message)
+    assert_match(/foo/, error.message)
+    assert_kind_of(Integer, error.code)
+
     assert_raises(TypeError) { Ilios::Cassandra.session.prepare(Object.new) }
 
     # valid query
