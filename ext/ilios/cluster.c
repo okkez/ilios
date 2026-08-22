@@ -255,22 +255,22 @@ static void cluster_check_error(CassError error, const char *name)
 
 // NUM2UINT/NUM2ULL silently wrap negative values into huge unsigned
 // numbers, so reject negatives explicitly before converting.
-static unsigned cluster_value_to_uint(VALUE value)
+static unsigned cluster_value_to_uint(VALUE value, const char *name)
 {
     long v = NUM2LONG(value);
 
     if (v < 0) {
-        rb_raise(rb_eRangeError, "Invalid value: %ld", v);
+        rb_raise(rb_eRangeError, "Invalid %s: %ld", name, v);
     }
     return NUM2UINT(value);
 }
 
-static cass_uint64_t cluster_value_to_uint64(VALUE value)
+static cass_uint64_t cluster_value_to_uint64(VALUE value, const char *name)
 {
     long long v = NUM2LL(value);
 
     if (v < 0) {
-        rb_raise(rb_eRangeError, "Invalid value: %lld", v);
+        rb_raise(rb_eRangeError, "Invalid %s: %lld", name, v);
     }
     return NUM2ULL(value);
 }
@@ -379,7 +379,7 @@ static VALUE cluster_num_threads_io(VALUE self, VALUE num_threads)
     CassandraCluster *cassandra_cluster;
 
     GET_CLUSTER(self, cassandra_cluster);
-    cluster_check_error(cass_cluster_set_num_threads_io(cassandra_cluster->cluster, cluster_value_to_uint(num_threads)), "num_threads_io");
+    cluster_check_error(cass_cluster_set_num_threads_io(cassandra_cluster->cluster, cluster_value_to_uint(num_threads, "num_threads_io")), "num_threads_io");
 
     return self;
 }
@@ -398,7 +398,7 @@ static VALUE cluster_queue_size_io(VALUE self, VALUE queue_size)
     CassandraCluster *cassandra_cluster;
 
     GET_CLUSTER(self, cassandra_cluster);
-    cluster_check_error(cass_cluster_set_queue_size_io(cassandra_cluster->cluster, cluster_value_to_uint(queue_size)), "queue_size_io");
+    cluster_check_error(cass_cluster_set_queue_size_io(cassandra_cluster->cluster, cluster_value_to_uint(queue_size, "queue_size_io")), "queue_size_io");
 
     return self;
 }
@@ -417,7 +417,7 @@ static VALUE cluster_core_connections_per_host(VALUE self, VALUE num_connections
     CassandraCluster *cassandra_cluster;
 
     GET_CLUSTER(self, cassandra_cluster);
-    cluster_check_error(cass_cluster_set_core_connections_per_host(cassandra_cluster->cluster, cluster_value_to_uint(num_connections)), "core_connections_per_host");
+    cluster_check_error(cass_cluster_set_core_connections_per_host(cassandra_cluster->cluster, cluster_value_to_uint(num_connections, "core_connections_per_host")), "core_connections_per_host");
 
     return self;
 }
@@ -436,7 +436,7 @@ static VALUE cluster_constant_reconnect(VALUE self, VALUE delay_ms)
     CassandraCluster *cassandra_cluster;
 
     GET_CLUSTER(self, cassandra_cluster);
-    cass_cluster_set_constant_reconnect(cassandra_cluster->cluster, cluster_value_to_uint64(delay_ms));
+    cass_cluster_set_constant_reconnect(cassandra_cluster->cluster, cluster_value_to_uint64(delay_ms, "constant_reconnect"));
 
     return self;
 }
@@ -458,7 +458,7 @@ static VALUE cluster_exponential_reconnect(VALUE self, VALUE base_delay_ms, VALU
     CassandraCluster *cassandra_cluster;
 
     GET_CLUSTER(self, cassandra_cluster);
-    cluster_check_error(cass_cluster_set_exponential_reconnect(cassandra_cluster->cluster, cluster_value_to_uint64(base_delay_ms), cluster_value_to_uint64(max_delay_ms)), "exponential_reconnect");
+    cluster_check_error(cass_cluster_set_exponential_reconnect(cassandra_cluster->cluster, cluster_value_to_uint64(base_delay_ms, "exponential_reconnect base_delay_ms"), cluster_value_to_uint64(max_delay_ms, "exponential_reconnect max_delay_ms")), "exponential_reconnect");
 
     return self;
 }
@@ -494,7 +494,7 @@ static VALUE cluster_tcp_keepalive(VALUE self, VALUE enabled, VALUE delay_secs)
     CassandraCluster *cassandra_cluster;
 
     GET_CLUSTER(self, cassandra_cluster);
-    cass_cluster_set_tcp_keepalive(cassandra_cluster->cluster, RTEST(enabled) ? cass_true : cass_false, cluster_value_to_uint(delay_secs));
+    cass_cluster_set_tcp_keepalive(cassandra_cluster->cluster, RTEST(enabled) ? cass_true : cass_false, cluster_value_to_uint(delay_secs, "tcp_keepalive delay_secs"));
 
     return self;
 }
@@ -514,7 +514,7 @@ static VALUE cluster_connection_heartbeat_interval(VALUE self, VALUE interval_se
     CassandraCluster *cassandra_cluster;
 
     GET_CLUSTER(self, cassandra_cluster);
-    cass_cluster_set_connection_heartbeat_interval(cassandra_cluster->cluster, cluster_value_to_uint(interval_secs));
+    cass_cluster_set_connection_heartbeat_interval(cassandra_cluster->cluster, cluster_value_to_uint(interval_secs, "connection_heartbeat_interval"));
 
     return self;
 }
@@ -533,7 +533,7 @@ static VALUE cluster_connection_idle_timeout(VALUE self, VALUE timeout_secs)
     CassandraCluster *cassandra_cluster;
 
     GET_CLUSTER(self, cassandra_cluster);
-    cass_cluster_set_connection_idle_timeout(cassandra_cluster->cluster, cluster_value_to_uint(timeout_secs));
+    cass_cluster_set_connection_idle_timeout(cassandra_cluster->cluster, cluster_value_to_uint(timeout_secs, "connection_idle_timeout"));
 
     return self;
 }
