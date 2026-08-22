@@ -285,21 +285,22 @@ static void cluster_check_consistency(long value, const char *name)
     }
 }
 
-static const struct {
+static struct {
     const char *name;
     CassConsistency consistency;
+    ID id;
 } cluster_consistency_symbols[] = {
-    { "any", CASS_CONSISTENCY_ANY },
-    { "one", CASS_CONSISTENCY_ONE },
-    { "two", CASS_CONSISTENCY_TWO },
-    { "three", CASS_CONSISTENCY_THREE },
-    { "quorum", CASS_CONSISTENCY_QUORUM },
-    { "all", CASS_CONSISTENCY_ALL },
-    { "local_quorum", CASS_CONSISTENCY_LOCAL_QUORUM },
-    { "each_quorum", CASS_CONSISTENCY_EACH_QUORUM },
-    { "serial", CASS_CONSISTENCY_SERIAL },
-    { "local_serial", CASS_CONSISTENCY_LOCAL_SERIAL },
-    { "local_one", CASS_CONSISTENCY_LOCAL_ONE },
+    { "any", CASS_CONSISTENCY_ANY, 0 },
+    { "one", CASS_CONSISTENCY_ONE, 0 },
+    { "two", CASS_CONSISTENCY_TWO, 0 },
+    { "three", CASS_CONSISTENCY_THREE, 0 },
+    { "quorum", CASS_CONSISTENCY_QUORUM, 0 },
+    { "all", CASS_CONSISTENCY_ALL, 0 },
+    { "local_quorum", CASS_CONSISTENCY_LOCAL_QUORUM, 0 },
+    { "each_quorum", CASS_CONSISTENCY_EACH_QUORUM, 0 },
+    { "serial", CASS_CONSISTENCY_SERIAL, 0 },
+    { "local_serial", CASS_CONSISTENCY_LOCAL_SERIAL, 0 },
+    { "local_one", CASS_CONSISTENCY_LOCAL_ONE, 0 },
 };
 
 // Accepts either an Integer consistency constant or a Symbol such as
@@ -312,7 +313,7 @@ static CassConsistency cluster_value_to_consistency(VALUE value, const char *nam
         ID id = rb_sym2id(value);
 
         for (size_t i = 0; i < sizeof(cluster_consistency_symbols) / sizeof(cluster_consistency_symbols[0]); i++) {
-            if (id == rb_intern(cluster_consistency_symbols[i].name)) {
+            if (id == cluster_consistency_symbols[i].id) {
                 return cluster_consistency_symbols[i].consistency;
             }
         }
@@ -658,6 +659,10 @@ static void cluster_compact(void *ptr)
 
 void Init_cluster(void)
 {
+    for (size_t i = 0; i < sizeof(cluster_consistency_symbols) / sizeof(cluster_consistency_symbols[0]); i++) {
+        cluster_consistency_symbols[i].id = rb_intern(cluster_consistency_symbols[i].name);
+    }
+
     rb_define_alloc_func(cCluster, cluster_allocator);
     rb_define_method(cCluster, "initialize", cluster_initialize, 0);
     rb_define_method(cCluster, "connect", cluster_connect, 0);
