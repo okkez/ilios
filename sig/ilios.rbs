@@ -21,6 +21,18 @@ module Ilios
       PROTOCOL_VERSION_DSEV1: Integer
       PROTOCOL_VERSION_DSEV2: Integer
 
+      CONSISTENCY_ANY: Integer
+      CONSISTENCY_ONE: Integer
+      CONSISTENCY_TWO: Integer
+      CONSISTENCY_THREE: Integer
+      CONSISTENCY_QUORUM: Integer
+      CONSISTENCY_ALL: Integer
+      CONSISTENCY_LOCAL_QUORUM: Integer
+      CONSISTENCY_EACH_QUORUM: Integer
+      CONSISTENCY_SERIAL: Integer
+      CONSISTENCY_LOCAL_SERIAL: Integer
+      CONSISTENCY_LOCAL_ONE: Integer
+
       def connect: () -> Ilios::Cassandra::Session
       def hosts: (Array[String]) -> self
       def port: (Integer) -> self
@@ -30,6 +42,23 @@ module Ilios
       def request_timeout: (Integer) -> self
       def resolve_timeout: (Integer) -> self
       def constant_speculative_execution_policy: (Integer, Integer) -> self
+      def credentials: (String, String) -> self
+      def consistency: (Integer | Symbol) -> self
+      def serial_consistency: (Integer | Symbol) -> self
+      def num_threads_io: (Integer) -> self
+      def queue_size_io: (Integer) -> self
+      def core_connections_per_host: (Integer) -> self
+      def constant_reconnect: (Integer) -> self
+      def exponential_reconnect: (Integer, Integer) -> self
+      def tcp_nodelay: (bool) -> self
+      def tcp_keepalive: (bool, Integer) -> self
+      def connection_heartbeat_interval: (Integer) -> self
+      def connection_idle_timeout: (Integer) -> self
+      def load_balance_round_robin: () -> self
+      def load_balance_dc_aware: (String) -> self
+      def token_aware_routing: (bool) -> self
+      def latency_aware_routing: (bool) -> self
+      def use_schema: (bool) -> self
     end
 
     class Session

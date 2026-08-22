@@ -171,6 +171,25 @@ Notes:
 - Because a `Symbol` map key is stored as its `String` equivalent, binding a map that contains both (for example `{ k1: 1, 'k1' => 2 }`) ends up as a single key on the server; the entry bound last wins.
 - Binding a `String` containing a NUL character (`\0`) to a `text` (or `ascii` / `varchar`) column raises `ArgumentError` (known limitation).
 
+### Authentication and cluster options
+
+Username/password authentication (Cassandra's `PasswordAuthenticator`) and
+common cluster options are configured on `Cluster` before `connect`:
+
+```ruby
+cluster = Ilios::Cassandra::Cluster.new
+cluster.hosts(['127.0.0.1'])
+cluster.credentials('username', 'password')
+cluster.consistency(:quorum) # or Ilios::Cassandra::Cluster::CONSISTENCY_QUORUM
+cluster.num_threads_io(4)
+cluster.exponential_reconnect(2_000, 60_000)
+cluster.tcp_keepalive(true, 60)
+cluster.load_balance_dc_aware('dc1')
+session = cluster.connect
+```
+
+See the RBS signatures in `sig/ilios.rbs` for the full list of options.
+
 ### Synchronous API
 `Ilios::Cassandra::Session#prepare` and `Ilios::Cassandra::Session#execute` are provided as synchronous API.
 

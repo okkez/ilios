@@ -6,6 +6,53 @@ require 'minitest/autorun'
 require 'securerandom'
 
 CASSANDRA_HOST = ENV['CASSANDRA_HOST'] || '127.0.0.1'
+CASSANDRA_AUTH_HOST = ENV['CASSANDRA_AUTH_HOST'] || CASSANDRA_HOST
+CASSANDRA_AUTH_PORT = Integer(ENV['CASSANDRA_AUTH_PORT'] || 9043)
+
+# Returns true when the auth-enabled node is reachable AND its default
+# superuser (cassandra/cassandra) is ready to authenticate. When this
+# returns false, authentication tests are skipped (except on CI, where it
+# raises instead).
+def auth_cassandra_available?
+  auth_cassandra_reachable? && auth_cassandra_superuser_ready?
+end
+
+# On CI the auth container may still be booting when tests start, so retry.
+# Locally a closed port means there is no auth node, so fail fast instead of
+# waiting.
+def auth_cassandra_reachable?
+  require('socket')
+
+  deadline = Time.now + 180
+  begin
+    TCPSocket.new(CASSANDRA_AUTH_HOST, CASSANDRA_AUTH_PORT, connect_timeout: 5).close
+    true
+  rescue SystemCallError, SocketError, IO::TimeoutError
+    return false unless ENV['CI'] && Time.now <= deadline
+
+    sleep(5)
+    retry
+  end
+end
+
+# The superuser is created ~10 seconds after the node boots, so this gets its
+# own deadline instead of sharing the one the TCP probe may have used up.
+def auth_cassandra_superuser_ready?
+  deadline = Time.now + 180
+  begin
+    cluster = Ilios::Cassandra::Cluster.new
+    cluster.hosts([CASSANDRA_AUTH_HOST])
+    cluster.port(CASSANDRA_AUTH_PORT)
+    cluster.credentials('cassandra', 'cassandra')
+    cluster.connect
+    true
+  rescue StandardError
+    return false if Time.now > deadline
+
+    sleep(5)
+    retry
+  end
+end
 
 module Ilios
   module Cassandra
@@ -82,6 +129,10 @@ end
 at_exit do
   verify_gc_compaction
 end
+
+CASSANDRA_AUTH_AVAILABLE = auth_cassandra_available?
+
+raise StandardError, 'auth-enabled Cassandra (CASSANDRA_AUTH_PORT) is not available on CI' if ENV['CI'] && !CASSANDRA_AUTH_AVAILABLE
 
 prepare_keyspace
 prepare_table

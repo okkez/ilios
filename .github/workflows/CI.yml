@@ -66,6 +66,9 @@ jobs:
     - name: Start Cassandra v${{ matrix.cassandra-version }}
       run: |
         docker run --name cassandra -d -p 9042:9042 cassandra:${{ matrix.cassandra-version }}
+    - name: Start Cassandra v${{ matrix.cassandra-version }} with authentication
+      run: |
+        docker run --name cassandra-auth -d -p 9043:9042 -e MAX_HEAP_SIZE=512M -e HEAP_NEWSIZE=100M cassandra:${{ matrix.cassandra-version }} bash -c "sed -i 's/^authenticator:.*/authenticator: PasswordAuthenticator/' /etc/cassandra/cassandra.yaml && exec docker-entrypoint.sh cassandra -f"
     - uses: actions/checkout@v7
     - name: Set up Ruby
       uses: ruby/setup-ruby@v1

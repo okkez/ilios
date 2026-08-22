@@ -6,17 +6,32 @@ services:
     - 9042:9042
     volumes:
     - cassandra-data:/var/lib/cassandra
+  cassandra-auth:
+    image: cassandra:4
+    ports:
+      - "9043:9042"
+    command: >
+      bash -c "sed -i 's/^authenticator:.*/authenticator: PasswordAuthenticator/'
+      /etc/cassandra/cassandra.yaml
+      && exec docker-entrypoint.sh cassandra -f"
+    volumes:
+      - cassandra-auth-data:/var/lib/cassandra
   ilios:
     build:
       context: ./dockerfiles
       dockerfile: ubuntu.dockerfile
     depends_on:
     - cassandra
+    - cassandra-auth
     environment:
       CASSANDRA_HOST: cassandra
+      CASSANDRA_AUTH_HOST: cassandra-auth
+      CASSANDRA_AUTH_PORT: 9042
     command: bash -c 'sleep infinity'
     volumes:
     - "./:/opt/ilios"
 volumes:
   cassandra-data:
+    driver: local
+  cassandra-auth-data:
     driver: local
