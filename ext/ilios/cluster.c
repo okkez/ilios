@@ -313,9 +313,12 @@ static CassConsistency cluster_value_to_consistency(VALUE value, const char *nam
     long v;
 
     if (SYMBOL_P(value)) {
-        ID id = rb_sym2id(value);
+        // rb_sym2id would intern an unknown Symbol and leave it uncollectable, so
+        // repeated invalid values grow memory with no way to reclaim it.
+        VALUE name_value = value;
+        ID id = rb_check_id(&name_value);
 
-        for (size_t i = 0; i < sizeof(cluster_consistency_symbols) / sizeof(cluster_consistency_symbols[0]); i++) {
+        for (size_t i = 0; id && i < sizeof(cluster_consistency_symbols) / sizeof(cluster_consistency_symbols[0]); i++) {
             if (id == cluster_consistency_symbols[i].id) {
                 return cluster_consistency_symbols[i].consistency;
             }
