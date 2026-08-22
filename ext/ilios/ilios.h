@@ -127,6 +127,7 @@ extern VALUE id_push;
 extern VALUE id_pop;
 extern VALUE id_alive;
 extern VALUE id_report_on_exception;
+extern VALUE id_code;
 extern VALUE sym_unsupported_column_type;
 
 extern void Init_cluster(void);

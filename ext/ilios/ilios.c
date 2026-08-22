@@ -21,6 +21,7 @@ VALUE id_push;
 VALUE id_pop;
 VALUE id_alive;
 VALUE id_report_on_exception;
+VALUE id_code;
 VALUE sym_unsupported_column_type;
 
 #if defined(HAVE_MALLOC_USABLE_SIZE)
@@ -88,6 +89,9 @@ void Init_ilios(void)
     eConnectError = rb_define_class_under(mCassandra, "ConnectError", rb_eStandardError);
     eExecutionError = rb_define_class_under(mCassandra, "ExecutionError", rb_eStandardError);
     eStatementError = rb_define_class_under(mCassandra, "StatementError", rb_eStandardError);
+    // @code is only set for errors yielded to Future#on_failure blocks;
+    // ExecutionErrors raised elsewhere via rb_raise leave #code nil.
+    rb_define_attr(eExecutionError, "code", 1, 0);
 
     cSizedQueue = rb_const_get(rb_cThread, rb_intern("SizedQueue"));
     rb_require("set");
@@ -101,6 +105,7 @@ void Init_ilios(void)
     id_pop = rb_intern("pop");
     id_alive = rb_intern("alive?");
     id_report_on_exception = rb_intern("report_on_exception=");
+    id_code = rb_intern("@code");
     sym_unsupported_column_type = ID2SYM(rb_intern("unsupported_column_type"));
 
     rb_define_module_function(mCassandra, "log_level", cassandra_set_log_level, 1);

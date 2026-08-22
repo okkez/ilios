@@ -75,9 +75,13 @@ module Ilios
       def idempotent=: (bool) -> self
     end
 
+    class ExecutionError < StandardError
+      def code: () -> Integer?
+    end
+
     class Future
       def on_success: () { (Ilios::Cassandra::Result) -> void } -> self
-      def on_failure: () { () -> void } -> self
+      def on_failure: () { (Ilios::Cassandra::ExecutionError) -> void } -> self
       def await: () -> self
     end
 

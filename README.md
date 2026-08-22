@@ -226,8 +226,12 @@ prepare_future.on_success { |statement|
       p result
       p "success"
     }
-    result_future.on_failure {
-      p "fail"
+    # `error` is an `Ilios::Cassandra::ExecutionError` (a StandardError with
+    # a #code Integer attribute); the block is optional-arity, so `{ p "fail" }`
+    # still works without it.
+    result_future.on_failure { |error|
+      p error.message
+      p error.code
     }
 
     futures << result_future

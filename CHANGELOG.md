@@ -1,5 +1,9 @@
 # Change Log
 
+## Unreleased
+
+- Yield the failure reason as an `Ilios::Cassandra::ExecutionError` to `Future#on_failure` blocks that accept an argument (#XX)
+
 ## 1.1.2
 
 - Support username/password authentication with `Cluster#credentials` (#33)

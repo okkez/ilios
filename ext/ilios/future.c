@@ -1,5 +1,7 @@
 #include "ilios.h"
 
+#include <string.h>
+
 #define THREAD_MAX 5
 #define QUEUE_MAX 100
 
@@ -136,7 +138,26 @@ static void future_result_success_yield(CassandraFuture *cassandra_future)
 static void future_result_failure_yield(CassandraFuture *cassandra_future)
 {
     if (cassandra_future->on_failure_block) {
-        rb_proc_call_with_block(cassandra_future->on_failure_block, 0, NULL, Qnil);
+        if (rb_proc_arity(cassandra_future->on_failure_block)) {
+            VALUE error;
+            CassError error_code;
+            const char *message;
+            size_t message_length;
+
+            error_code = cass_future_error_code(cassandra_future->future);
+            cass_future_error_message(cassandra_future->future, &message, &message_length);
+            if (message_length == 0) {
+                message = cass_error_desc(error_code);
+                message_length = strlen(message);
+            }
+
+            error = rb_exc_new(eExecutionError, message, message_length);
+            rb_ivar_set(error, id_code, INT2NUM(error_code));
+
+            rb_proc_call_with_block(cassandra_future->on_failure_block, 1, &error, Qnil);
+        } else {
+            rb_proc_call_with_block(cassandra_future->on_failure_block, 0, NULL, Qnil);
+        }
     }
 }
 
@@ -317,6 +338,9 @@ static VALUE future_on_failure_synchronize(VALUE future)
 /**
  * Run block when future resolves to error.
  *
+ * @yieldparam error [Cassandra::ExecutionError] The failure reason. Only
+ *   yielded when the block accepts an argument; a zero-arity block is still
+ *   called with no arguments.
  * @return [Cassandra::Future] self.
  * @raise [Cassandra::ExecutionError] If this method will be called twice.
  * @raise [ArgumentError] If no block was given.
