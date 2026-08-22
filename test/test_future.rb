@@ -127,6 +127,7 @@ class FutureTest < Minitest::Test
     assert_kind_of(Ilios::Cassandra::ExecutionError, error)
     assert_kind_of(Integer, error.code)
     assert_match(/foo/, error.message)
+    assert_equal(Encoding::UTF_8, error.message.encoding)
   end
 
   def test_on_failure_yields_execution_error_when_already_ready

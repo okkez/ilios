@@ -93,8 +93,27 @@ VALUE ilios_future_error_new(VALUE exception_class, const char *prefix, CassFutu
         message_length = strlen(message);
     }
 
-    body = rb_str_new(message, message_length);
-    full_message = prefix ? rb_sprintf("%s: %"PRIsVALUE, prefix, body) : body;
+    // The driver's message (and our generic fallback) are the server's raw
+    // bytes, but in practice always UTF-8 text (CQL identifiers/literals are
+    // UTF-8; the fallback is plain ASCII, a UTF-8 subset). rb_str_new tags
+    // it ASCII-8BIT, which breaks string concatenation with UTF-8 user code
+    // (Encoding::CompatibilityError) as soon as it echoes back multibyte
+    // input, so tag it UTF-8 explicitly.
+    //
+    // rb_sprintf("%s: %"PRIsVALUE, prefix, body) was tried here, but its "%s"
+    // conversion tags the C string ASCII-8BIT, and the negotiated result
+    // encoding of the whole formatted string then comes back ASCII-8BIT too
+    // (verified empirically) -- the same bug this fix removes. Build the
+    // prefixed message by hand instead, out of explicitly UTF-8 pieces, so
+    // the result is UTF-8 in both the prefixed and prefix-less cases.
+    body = rb_utf8_str_new(message, message_length);
+    if (prefix) {
+        full_message = rb_utf8_str_new_cstr(prefix);
+        rb_str_cat_cstr(full_message, ": ");
+        rb_str_append(full_message, body);
+    } else {
+        full_message = body;
+    }
 
     error = rb_exc_new_str(exception_class, full_message);
     rb_ivar_set(error, id_code, INT2NUM(error_code));

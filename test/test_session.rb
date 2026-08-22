@@ -9,6 +9,7 @@ class SessionTest < Minitest::Test
     assert_match(/\AUnable to prepare query: /, error.message)
     assert_match(/foo/, error.message)
     assert_kind_of(Integer, error.code)
+    assert_equal(Encoding::UTF_8, error.message.encoding)
 
     assert_raises(TypeError) { Ilios::Cassandra.session.prepare(Object.new) }
 
