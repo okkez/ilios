@@ -11,16 +11,25 @@ CASSANDRA_AUTH_PORT = Integer(ENV['CASSANDRA_AUTH_PORT'] || 9043)
 # Returns true when the auth-enabled node is reachable AND its default
 # superuser (cassandra/cassandra) is ready to authenticate. The superuser is
 # created ~10 seconds after the node boots, so retry for a while before
-# giving up. When this returns false, authentication tests are skipped.
+# giving up. On CI, the TCP probe itself is retried within the same
+# deadline, since the auth container may still be booting when tests
+# start; locally, a closed port means there is no auth node, so we fail
+# fast instead of waiting. When this returns false, authentication tests
+# are skipped (except on CI, where that raises instead).
 def wait_for_auth_cassandra
   require('socket')
+
+  deadline = Time.now + 180
   begin
     TCPSocket.new(CASSANDRA_HOST, CASSANDRA_AUTH_PORT).close
   rescue SystemCallError
+    if ENV['CI'] && Time.now <= deadline
+      sleep(5)
+      retry
+    end
     return false
   end
 
-  deadline = Time.now + 180
   begin
     cluster = Ilios::Cassandra::Cluster.new
     cluster.hosts([CASSANDRA_HOST])
