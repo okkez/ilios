@@ -255,16 +255,17 @@ static void cluster_check_error(CassError error, const char *name)
     }
 }
 
-// NUM2UINT/NUM2ULL silently wrap negative values into huge unsigned
-// numbers, so reject negatives explicitly before converting.
+// Casting a negative value to unsigned wraps it into a huge number, so check
+// the range on the signed value NUM2LONG/NUM2LL already produced. Converting a
+// second time would run to_int again, which may return a different value.
 static unsigned cluster_value_to_uint(VALUE value, const char *name)
 {
     long v = NUM2LONG(value);
 
-    if (v < 0) {
+    if (v < 0 || v > UINT_MAX) {
         rb_raise(rb_eRangeError, "Invalid %s: %ld", name, v);
     }
-    return NUM2UINT(value);
+    return (unsigned)v;
 }
 
 static cass_uint64_t cluster_value_to_uint64(VALUE value, const char *name)
@@ -274,7 +275,7 @@ static cass_uint64_t cluster_value_to_uint64(VALUE value, const char *name)
     if (v < 0) {
         rb_raise(rb_eRangeError, "Invalid %s: %lld", name, v);
     }
-    return NUM2ULL(value);
+    return (cass_uint64_t)v;
 }
 
 // The driver only rejects CASS_CONSISTENCY_UNKNOWN at set time; any other
