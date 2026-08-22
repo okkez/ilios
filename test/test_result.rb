@@ -170,7 +170,8 @@ class ResultTest < Minitest::Test
     # the driver logs the decoding failure at ERROR level
     Ilios::Cassandra.log_level(Ilios::Cassandra::LOG_DISABLED)
     begin
-      assert_raises(Ilios::Cassandra::ExecutionError) { results.to_a }
+      error = assert_raises(Ilios::Cassandra::ExecutionError) { results.to_a }
+      assert_kind_of(Integer, error.code)
     ensure
       # rubocop:disable Style/GlobalVars
       Ilios::Cassandra.log_level($default_test_log_level)
