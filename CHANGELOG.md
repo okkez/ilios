@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- Support username/password authentication with `Cluster#credentials` (#XX)
-- Add cluster options: consistency, serial_consistency, num_threads_io, queue_size_io, core_connections_per_host, constant_reconnect, exponential_reconnect, tcp_nodelay, tcp_keepalive, connection_heartbeat_interval, connection_idle_timeout, load_balance_round_robin, load_balance_dc_aware, token_aware_routing, latency_aware_routing and use_schema (#XX)
-- Accept Symbol consistency levels (e.g. `:quorum`) in `Cluster#consistency` and `Cluster#serial_consistency` (#XX)
+- Support username/password authentication with `Cluster#credentials` (#33)
+- Add cluster options: consistency, serial_consistency, num_threads_io, queue_size_io, core_connections_per_host, constant_reconnect, exponential_reconnect, tcp_nodelay, tcp_keepalive, connection_heartbeat_interval, connection_idle_timeout, load_balance_round_robin, load_balance_dc_aware, token_aware_routing, latency_aware_routing and use_schema (#33)
+- Accept Symbol consistency levels (e.g. `:quorum`) in `Cluster#consistency` and `Cluster#serial_consistency` (#33)
 
 ## 1.1.0
 
