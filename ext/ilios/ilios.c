@@ -95,8 +95,14 @@ VALUE ilios_future_error_new(VALUE exception_class, const char *prefix, CassFutu
 
     // The driver hands back the server's raw bytes, which rb_str_new would
     // tag ASCII-8BIT; CQL identifiers and literals are UTF-8, so tag it
-    // UTF-8 and keep the prefixed message in that encoding too.
+    // UTF-8 and keep the prefixed message in that encoding too. The message
+    // can also carry driver-local text (strerror output, host names), which
+    // is not guaranteed UTF-8, so replace invalid bytes rather than handing
+    // back a string that raises ArgumentError on the first regexp match.
     body = rb_utf8_str_new(message, message_length);
+    if (rb_enc_str_coderange(body) == ENC_CODERANGE_BROKEN) {
+        body = rb_str_scrub(body, Qnil);
+    }
     full_message = prefix ? rb_enc_sprintf(rb_utf8_encoding(), "%s: %"PRIsVALUE, prefix, body) : body;
 
     error = rb_exc_new_str(exception_class, full_message);

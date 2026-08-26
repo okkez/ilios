@@ -17,6 +17,13 @@ class SessionTest < Minitest::Test
     assert_kind_of(Ilios::Cassandra::Statement, Ilios::Cassandra.session.prepare('SELECT * FROM ilios.test;'))
   end
 
+  def test_prepare_with_invalid_utf8_query
+    error = assert_raises(Ilios::Cassandra::ExecutionError) { Ilios::Cassandra.session.prepare("SELECT * FROM ilios.\xFF\xFE;") }
+
+    assert_equal(Encoding::UTF_8, error.message.encoding)
+    assert_predicate(error.message, :valid_encoding?)
+  end
+
   def test_execute
     # invalid statement
     assert_raises(TypeError) { Ilios::Cassandra.session.execute(Object.new) }
