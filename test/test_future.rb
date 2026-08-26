@@ -150,15 +150,16 @@ class FutureTest < Minitest::Test
   end
 
   def test_on_failure_with_zero_arity_block_still_works
-    statement = Ilios::Cassandra.session.prepare('SELECT * FROM ilios.test;')
-    future = Ilios::Cassandra.session.execute_async(statement)
+    # invalid query so the failure path actually runs; a lambda instead of a
+    # block so that passing the error to a zero-arity callback raises
+    # ArgumentError instead of being silently ignored
+    future = Ilios::Cassandra.session.prepare_async('foo')
 
     count = 0
-    future.on_failure do
-      count += 1
-    end
+    zero_arity_callback = -> { count += 1 }
+    future.on_failure(&zero_arity_callback)
     future.await
 
-    assert_equal(0, count)
+    assert_equal(1, count)
   end
 end
