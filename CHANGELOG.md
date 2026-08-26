@@ -1,10 +1,13 @@
 # Change Log
 
-## Unreleased
+## 1.2.0
 
+- Fix cluster setters silently ignoring invalid values in `Cluster#port`, `#protocol_version`, `#connect_timeout`, `#request_timeout` and `#resolve_timeout` (#36)
+- Fix segfault when a `Cluster` created by `allocate` or `dup` is used without running `initialize` (#37)
 - Yield the failure reason as an `Ilios::Cassandra::ExecutionError` to `Future#on_failure` blocks that accept an argument, including variadic blocks (e.g. `{ |*args| }`); zero-arity blocks are unchanged (#40)
 - The synchronous API (`Session#prepare`, `Session#execute`, `Result#next_page`, `Cluster#connect`) now raises errors carrying the server-reported message and a `#code` Integer, same as `Future#on_failure` (#40)
 - `Ilios::Cassandra::StatementError` also carries a `#code` Integer, so `#code` is answered by every error class the driver raises (#40)
+- Fix `Future#on_success` RBS signature to allow the `Statement` yielded by `prepare_async` (#42)
 
 ## 1.1.2
 
