@@ -32,7 +32,9 @@ class StatementTest < Minitest::Test
     # invalid value
     assert_raises(TypeError) { @insert_statement.bind(Object.new) }
     assert_raises(TypeError) { @insert_statement.bind({ 1 => 123 }) }
-    assert_raises(Ilios::Cassandra::StatementError) { @insert_statement.bind({ foo: 123 }) }
+    error = assert_raises(Ilios::Cassandra::StatementError) { @insert_statement.bind({ foo: 123 }) }
+
+    assert_nil(error.code)
 
     # valid values
     # rubocop:disable Style/StringHashKeys

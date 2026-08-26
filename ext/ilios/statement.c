@@ -141,7 +141,10 @@ static void statement_bind_collection(statement_bind_target *target, const CassD
 static void statement_bind_check(CassError result, VALUE key)
 {
     if (result != CASS_OK) {
-        rb_raise(eStatementError, "Failed to bind value of %"PRIsVALUE" column: %s", key, cass_error_desc(result));
+        VALUE message = rb_enc_sprintf(rb_utf8_encoding(), "Failed to bind value of %"PRIsVALUE" column: %s",
+                                       key, cass_error_desc(result));
+
+        rb_exc_raise(ilios_error_new(eStatementError, message, result));
     }
 }
 

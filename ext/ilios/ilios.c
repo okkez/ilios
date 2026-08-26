@@ -134,6 +134,7 @@ void Init_ilios(void)
     // elsewhere via plain rb_raise leave #code nil.
     rb_define_attr(eExecutionError, "code", 1, 0);
     rb_define_attr(eConnectError, "code", 1, 0);
+    rb_define_attr(eStatementError, "code", 1, 0);
 
     cSizedQueue = rb_const_get(rb_cThread, rb_intern("SizedQueue"));
     rb_require("set");

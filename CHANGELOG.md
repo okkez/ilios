@@ -4,6 +4,7 @@
 
 - Yield the failure reason as an `Ilios::Cassandra::ExecutionError` to `Future#on_failure` blocks that accept an argument, including variadic blocks (e.g. `{ |*args| }`); zero-arity blocks are unchanged (#40)
 - The synchronous API (`Session#prepare`, `Session#execute`, `Result#next_page`, `Cluster#connect`) now raises errors carrying the server-reported message and a `#code` Integer, same as `Future#on_failure` (#40)
+- `Ilios::Cassandra::StatementError` also carries a `#code` Integer, so `#code` is answered by every error class the driver raises (#40)
 
 ## 1.1.2
 
