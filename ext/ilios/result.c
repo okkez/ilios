@@ -81,27 +81,14 @@ static VALUE result_next_page(VALUE self)
     return self;
 }
 
-// No CassFuture is involved here (this fires while decoding an already
-// fetched row's column value), so ilios_future_error_new does not fit;
-// build the exception directly instead. `key` is always a String already
-// (see result_convert_row's rb_enc_interned_str, tagged UTF-8), and
-// cass_error_desc returns a static ASCII description, so appending it with
-// rb_str_cat_cstr (which appends raw bytes, undisturbed encoding) keeps the
-// whole message UTF-8 -- same reasoning as ilios_future_error_new's fix for
-// binary-tagged messages.
+// No CassFuture is involved here: this fires while decoding an already
+// fetched row's column value.
 static VALUE result_check_value_error_new(CassError error_code, VALUE key)
 {
-    VALUE message = rb_utf8_str_new_cstr("Unable to get value of ");
-    VALUE error;
+    VALUE message = rb_enc_sprintf(rb_utf8_encoding(), "Unable to get value of %"PRIsVALUE" column: %s",
+                                   key, cass_error_desc(error_code));
 
-    rb_str_append(message, key);
-    rb_str_cat_cstr(message, " column: ");
-    rb_str_cat_cstr(message, cass_error_desc(error_code));
-
-    error = rb_exc_new_str(eExecutionError, message);
-    rb_ivar_set(error, id_code, INT2NUM(error_code));
-
-    return error;
+    return ilios_error_new(eExecutionError, message, error_code);
 }
 
 static void result_check_value(CassError error_code, VALUE key)

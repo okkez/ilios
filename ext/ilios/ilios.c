@@ -77,6 +77,15 @@ static VALUE cassandra_set_log_level(VALUE self, VALUE log_level)
     return self;
 }
 
+VALUE ilios_error_new(VALUE exception_class, VALUE message, CassError error_code)
+{
+    VALUE error = rb_exc_new_str(exception_class, message);
+
+    rb_ivar_set(error, id_code, INT2NUM(error_code));
+
+    return error;
+}
+
 VALUE ilios_future_error_new(VALUE exception_class, const char *prefix, CassFuture *future)
 {
     CassError error_code;
@@ -84,7 +93,6 @@ VALUE ilios_future_error_new(VALUE exception_class, const char *prefix, CassFutu
     size_t message_length;
     VALUE body;
     VALUE full_message;
-    VALUE error;
 
     error_code = cass_future_error_code(future);
     cass_future_error_message(future, &message, &message_length);
@@ -105,10 +113,7 @@ VALUE ilios_future_error_new(VALUE exception_class, const char *prefix, CassFutu
     }
     full_message = prefix ? rb_enc_sprintf(rb_utf8_encoding(), "%s: %"PRIsVALUE, prefix, body) : body;
 
-    error = rb_exc_new_str(exception_class, full_message);
-    rb_ivar_set(error, id_code, INT2NUM(error_code));
-
-    return error;
+    return ilios_error_new(exception_class, full_message, error_code);
 }
 
 void Init_ilios(void)
@@ -125,10 +130,8 @@ void Init_ilios(void)
     eConnectError = rb_define_class_under(mCassandra, "ConnectError", rb_eStandardError);
     eExecutionError = rb_define_class_under(mCassandra, "ExecutionError", rb_eStandardError);
     eStatementError = rb_define_class_under(mCassandra, "StatementError", rb_eStandardError);
-    // @code is only set on errors built from a CassFuture (Future#on_failure
-    // and the synchronous raise sites that go through
-    // ilios_future_error_new); ExecutionError/ConnectError raised elsewhere
-    // via plain rb_raise leave #code nil.
+    // @code is only set on errors built by ilios_error_new; the ones raised
+    // elsewhere via plain rb_raise leave #code nil.
     rb_define_attr(eExecutionError, "code", 1, 0);
     rb_define_attr(eConnectError, "code", 1, 0);
 
