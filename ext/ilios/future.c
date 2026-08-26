@@ -136,7 +136,13 @@ static void future_result_success_yield(CassandraFuture *cassandra_future)
 static void future_result_failure_yield(CassandraFuture *cassandra_future)
 {
     if (cassandra_future->on_failure_block) {
-        rb_proc_call_with_block(cassandra_future->on_failure_block, 0, NULL, Qnil);
+        if (rb_proc_arity(cassandra_future->on_failure_block)) {
+            VALUE error = ilios_future_error_new(eExecutionError, NULL, cassandra_future->future);
+
+            rb_proc_call_with_block(cassandra_future->on_failure_block, 1, &error, Qnil);
+        } else {
+            rb_proc_call_with_block(cassandra_future->on_failure_block, 0, NULL, Qnil);
+        }
     }
 }
 
@@ -317,6 +323,9 @@ static VALUE future_on_failure_synchronize(VALUE future)
 /**
  * Run block when future resolves to error.
  *
+ * @yieldparam error [Cassandra::ExecutionError] The failure reason. Only
+ *   yielded when the block accepts an argument; a zero-arity block is still
+ *   called with no arguments.
  * @return [Cassandra::Future] self.
  * @raise [Cassandra::ExecutionError] If this method will be called twice.
  * @raise [ArgumentError] If no block was given.

@@ -139,7 +139,9 @@ class ResultTest < Minitest::Test
     CQL
     Ilios::Cassandra.session.execute(statement)
 
-    assert_raises(Ilios::Cassandra::ExecutionError) { results.next_page }
+    error = assert_raises(Ilios::Cassandra::ExecutionError) { results.next_page }
+    assert_match(/\AUnable to wait executing: /, error.message)
+    assert_kind_of(Integer, error.code)
 
     # the page fetched before the failure is still readable
     assert_equal(5, results.to_a.size)
@@ -168,7 +170,8 @@ class ResultTest < Minitest::Test
     # the driver logs the decoding failure at ERROR level
     Ilios::Cassandra.log_level(Ilios::Cassandra::LOG_DISABLED)
     begin
-      assert_raises(Ilios::Cassandra::ExecutionError) { results.to_a }
+      error = assert_raises(Ilios::Cassandra::ExecutionError) { results.to_a }
+      assert_kind_of(Integer, error.code)
     ensure
       # rubocop:disable Style/GlobalVars
       Ilios::Cassandra.log_level($default_test_log_level)

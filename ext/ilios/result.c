@@ -22,10 +22,9 @@ void result_await(CassandraResult *cassandra_result)
     nogvl_future_wait(cassandra_result->future);
 
     if (cass_future_error_code(cassandra_result->future) != CASS_OK) {
-        char error[4096] = { 0 };
+        VALUE error = ilios_future_error_new(eExecutionError, "Unable to wait executing", cassandra_result->future);
 
-        strncpy(error, cass_error_desc(cass_future_error_code(cassandra_result->future)), sizeof(error) - 1);
-        rb_raise(eExecutionError, "Unable to wait executing: %s", error);
+        rb_exc_raise(error);
     }
 
     if (cassandra_result->result == NULL) {
@@ -66,8 +65,10 @@ static VALUE result_next_page(VALUE self)
 
     error_code = cass_future_error_code(result_future);
     if (error_code != CASS_OK) {
+        VALUE error = ilios_future_error_new(eExecutionError, "Unable to wait executing", result_future);
+
         cass_future_free(result_future);
-        rb_raise(eExecutionError, "Unable to wait executing: %s", cass_error_desc(error_code));
+        rb_exc_raise(error);
     }
 
     cass_result_free(cassandra_result->result);
@@ -80,10 +81,20 @@ static VALUE result_next_page(VALUE self)
     return self;
 }
 
+// No CassFuture is involved here: this fires while decoding an already
+// fetched row's column value.
+static VALUE result_check_value_error_new(CassError error_code, VALUE key)
+{
+    VALUE message = rb_enc_sprintf(rb_utf8_encoding(), "Unable to get value of %"PRIsVALUE" column: %s",
+                                   key, cass_error_desc(error_code));
+
+    return ilios_error_new(eExecutionError, message, error_code);
+}
+
 static void result_check_value(CassError error_code, VALUE key)
 {
     if (error_code != CASS_OK) {
-        rb_raise(eExecutionError, "Unable to get value of %"PRIsVALUE" column: %s", key, cass_error_desc(error_code));
+        rb_exc_raise(result_check_value_error_new(error_code, key));
     }
 }
 

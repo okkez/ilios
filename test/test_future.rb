@@ -112,4 +112,54 @@ class FutureTest < Minitest::Test
 
     assert_equal(1, count)
   end
+
+  def test_on_failure_yields_execution_error
+    # invalid query, registered before the future is ready, so the callback
+    # runs on the thread pool path (future_result_yielder_synchronize).
+    future = Ilios::Cassandra.session.prepare_async('foo')
+
+    error = nil
+    future.on_failure do |err|
+      error = err
+    end
+    future.await
+
+    assert_kind_of(Ilios::Cassandra::ExecutionError, error)
+    assert_kind_of(Integer, error.code)
+    assert_match(/foo/, error.message)
+    assert_equal(Encoding::UTF_8, error.message.encoding)
+  end
+
+  def test_on_failure_yields_execution_error_when_already_ready
+    # invalid query; #await it first so the future is already ready by the
+    # time on_failure is registered, exercising the inline path
+    # (future_on_failure_synchronize's cass_future_ready branch) rather than
+    # the thread pool.
+    future = Ilios::Cassandra.session.prepare_async('foo')
+    future.await
+
+    error = nil
+    future.on_failure do |err|
+      error = err
+    end
+    future.await
+
+    assert_kind_of(Ilios::Cassandra::ExecutionError, error)
+    assert_kind_of(Integer, error.code)
+    assert_match(/foo/, error.message)
+  end
+
+  def test_on_failure_with_zero_arity_block_still_works
+    # invalid query so the failure path actually runs; a lambda instead of a
+    # block so that passing the error to a zero-arity callback raises
+    # ArgumentError instead of being silently ignored
+    future = Ilios::Cassandra.session.prepare_async('foo')
+
+    count = 0
+    zero_arity_callback = -> { count += 1 }
+    future.on_failure(&zero_arity_callback)
+    future.await
+
+    assert_equal(1, count)
+  end
 end

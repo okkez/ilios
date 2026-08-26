@@ -95,12 +95,10 @@ static VALUE cluster_connect(VALUE self)
     nogvl_future_wait(connect_future);
 
     if (cass_future_error_code(connect_future) != CASS_OK) {
-        char error[4096] = { 0 };
+        VALUE error = ilios_future_error_new(eConnectError, "Unable to connect", connect_future);
 
-        strncpy(error, cass_error_desc(cass_future_error_code(connect_future)), sizeof(error) - 1);
         cass_future_free(connect_future);
-        rb_raise(eConnectError, "Unable to connect: %s", error);
-        return Qnil;
+        rb_exc_raise(error);
     }
     cass_future_free(connect_future);
 

@@ -5,11 +5,23 @@ require_relative 'helper'
 class SessionTest < Minitest::Test
   def test_prepare
     # invalid query
-    assert_raises(Ilios::Cassandra::ExecutionError) { Ilios::Cassandra.session.prepare('foo') }
+    error = assert_raises(Ilios::Cassandra::ExecutionError) { Ilios::Cassandra.session.prepare('foo') }
+    assert_match(/\AUnable to prepare query: /, error.message)
+    assert_match(/foo/, error.message)
+    assert_kind_of(Integer, error.code)
+    assert_equal(Encoding::UTF_8, error.message.encoding)
+
     assert_raises(TypeError) { Ilios::Cassandra.session.prepare(Object.new) }
 
     # valid query
     assert_kind_of(Ilios::Cassandra::Statement, Ilios::Cassandra.session.prepare('SELECT * FROM ilios.test;'))
+  end
+
+  def test_prepare_with_invalid_utf8_query
+    error = assert_raises(Ilios::Cassandra::ExecutionError) { Ilios::Cassandra.session.prepare("SELECT * FROM ilios.\xFF\xFE;") }
+
+    assert_equal(Encoding::UTF_8, error.message.encoding)
+    assert_predicate(error.message, :valid_encoding?)
   end
 
   def test_execute

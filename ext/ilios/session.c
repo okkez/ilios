@@ -56,11 +56,10 @@ static VALUE session_prepare(VALUE self, VALUE query)
     nogvl_future_wait(prepare_future);
 
     if (cass_future_error_code(prepare_future) != CASS_OK) {
-        char error[4096] = { 0 };
+        VALUE error = ilios_future_error_new(eExecutionError, "Unable to prepare query", prepare_future);
 
-        strncpy(error, cass_error_desc(cass_future_error_code(prepare_future)), sizeof(error) - 1);
         cass_future_free(prepare_future);
-        rb_raise(eExecutionError, "Unable to prepare query: %s", error);
+        rb_exc_raise(error);
     }
 
     cassandra_statement_obj = CREATE_STATEMENT(cassandra_statement);
