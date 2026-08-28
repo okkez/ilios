@@ -318,6 +318,31 @@ class FutureTest < Minitest::Test
     [gated, future_a, future_b].each(&:await)
   end
 
+  def test_concurrent_awaits_all_return_after_the_callback_ran
+    # Every #await must honor the "returns after the callbacks ran"
+    # contract, including a second await racing the first one.
+    statement = Ilios::Cassandra.session.prepare(<<~CQL)
+      INSERT INTO ilios.test (id, text) VALUES (?, ?);
+    CQL
+    statement.bind({ id: 108_000, text: 'x' })
+    future = Ilios::Cassandra.session.execute_async(statement)
+
+    callback_ran = false
+    future.on_success do
+      sleep(0.2)
+      callback_ran = true
+    end
+
+    awaiters = Array.new(2) do
+      Thread.new do
+        future.await
+        callback_ran
+      end
+    end
+
+    assert_equal([true, true], awaiters.map(&:value))
+  end
+
   def test_on_failure_with_zero_arity_block_still_works
     # invalid query so the failure path actually runs; a lambda instead of a
     # block so that passing the error to a zero-arity callback raises

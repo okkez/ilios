@@ -44,8 +44,9 @@ typedef enum {
   // The dispatcher owns delivery of this future's completion.
   dispatch_owned,
   // The dispatcher began delivering the completion; registrations yield
-  // inline again.
-  dispatch_delivered
+  // inline again. Distinct from CassandraFuture.delivered, which is set
+  // only after the callbacks finished.
+  dispatch_delivering
 } future_dispatch_state;
 
 typedef enum {
@@ -105,7 +106,6 @@ typedef struct
     VALUE on_failure_block;
     VALUE proc_mutex;
 
-    bool already_waited;
     bool yielded;
     // Guarded by proc_mutex.
     future_dispatch_state dispatch_state;

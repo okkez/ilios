@@ -280,7 +280,7 @@ static VALUE future_result_yielder_synchronize(VALUE future)
     GET_FUTURE(future, cassandra_future);
 
     // Delivery has begun: registrations from now on yield inline again.
-    cassandra_future->dispatch_state = dispatch_delivered;
+    cassandra_future->dispatch_state = dispatch_delivering;
 
     if (!cassandra_future->yielded) {
         if (cass_future_error_code(cassandra_future->future) == CASS_OK) {
@@ -295,7 +295,6 @@ static VALUE future_result_yielder_synchronize(VALUE future)
             }
         }
     }
-    cassandra_future->already_waited = true;
     return Qnil;
 }
 
@@ -326,16 +325,24 @@ static void dispatch_process_node(future_dispatch_node *node)
     rb_protect(dispatch_yield_body, (VALUE)future, &state);
 
     GET_FUTURE((VALUE)future, cassandra_future);
-    // Usually set by the yielder already; also covers an unwind that hit
-    // first, so the future never stays marked dispatcher-owned.
-    cassandra_future->dispatch_state = dispatch_delivered;
-    // The awaiters' signal: unlike the ownership flip above (which happens
-    // when delivery begins), this is set only after the callbacks ran.
-    uv_mutex_lock(&dispatch.mutex);
-    cassandra_future->delivered = true;
-    uv_cond_broadcast(&dispatch.cond);
-    uv_mutex_unlock(&dispatch.mutex);
-    xfree(node);
+    // The yielder flips dispatch_state on this thread when delivery begins,
+    // so dispatch_owned here means an unwind hit before any callback ran.
+    if (cassandra_future->dispatch_state == dispatch_owned) {
+        // Put the completion back for the next dispatcher round rather than
+        // marking it delivered — #await must not return with the stored
+        // blocks silently dropped.
+        uv_mutex_lock(&dispatch.mutex);
+        dispatch_list_append(&dispatch.completed, node);
+        uv_mutex_unlock(&dispatch.mutex);
+    } else {
+        // The awaiters' signal: unlike the ownership flip (which happens
+        // when delivery begins), this is set only after the callbacks ran.
+        uv_mutex_lock(&dispatch.mutex);
+        cassandra_future->delivered = true;
+        uv_cond_broadcast(&dispatch.cond);
+        uv_mutex_unlock(&dispatch.mutex);
+        xfree(node);
+    }
 
     if (state) {
         VALUE errinfo = rb_errinfo();
@@ -451,7 +458,6 @@ VALUE future_create(CassFuture *future, VALUE session, VALUE statement, future_k
     cassandra_future->session_obj = session;
     cassandra_future->statement_obj = statement;
     cassandra_future->proc_mutex = rb_mutex_new();
-    cassandra_future->already_waited = false;
     cassandra_future->yielded = false;
     cassandra_future->dispatch_state = dispatch_not_registered;
     cassandra_future->delivered = false;
@@ -589,11 +595,6 @@ static VALUE future_await(VALUE self)
     GET_FUTURE(self, cassandra_future);
 
     rb_mutex_lock(cassandra_future->proc_mutex);
-    if (cassandra_future->already_waited) {
-        rb_mutex_unlock(cassandra_future->proc_mutex);
-        return self;
-    }
-    cassandra_future->already_waited = true;
     dispatch_state = cassandra_future->dispatch_state;
     rb_mutex_unlock(cassandra_future->proc_mutex);
 
@@ -602,7 +603,7 @@ static VALUE future_await(VALUE self)
 
         // No dispatcher involved (yet): wait on the future itself, then
         // re-read under the mutex so registrations racing with this #await
-        // are observed. For a dispatcher-involved future the semaphore
+        // are observed. For a dispatcher-involved future the delivered-flag
         // paths below cover completion too.
         nogvl_future_wait(cassandra_future->future);
         rb_mutex_lock(cassandra_future->proc_mutex);
