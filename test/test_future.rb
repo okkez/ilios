@@ -151,12 +151,11 @@ class FutureTest < Minitest::Test
   end
 
   def test_callback_registration_does_not_block_with_many_unyielded_futures
-    # The former SizedQueue-based thread pool blocked the registering thread
-    # once ~105 registered futures were waiting to be yielded: five futures
-    # whose callbacks block (a deterministic stand-in for slow futures) pinned
-    # all five pool threads, the queue filled up, and the next registration
-    # blocked forever. Callback registration must stay non-blocking no matter
-    # how many registered futures are still waiting to be yielded.
+    # The former SizedQueue-based pool blocked the registering thread once
+    # ~105 registered futures were waiting to be yielded: five futures with
+    # blocking callbacks (a deterministic stand-in for slow futures) pinned
+    # all five pool threads and the queue filled up. Registration must stay
+    # non-blocking no matter how many futures await delivery.
     gate = Queue.new
     statement = Ilios::Cassandra.session.prepare(<<~CQL)
       INSERT INTO ilios.test (id, text) VALUES (?, ?);
@@ -188,10 +187,10 @@ class FutureTest < Minitest::Test
   end
 
   def test_fast_future_callback_is_not_blocked_by_slow_futures
-    # With the former thread pool, five in-flight slow futures occupied all
-    # five pool threads in nogvl_future_wait, and a fast future registered
-    # afterwards had to wait in the FIFO queue behind them (head-of-line
-    # blocking). Callbacks must be delivered in completion order instead.
+    # With the former pool, five in-flight slow futures occupied all five
+    # pool threads, and a fast future registered afterwards waited its FIFO
+    # turn behind them (head-of-line blocking). Callbacks must be delivered
+    # in completion order instead.
     insert = Ilios::Cassandra.session.prepare(<<~CQL)
       INSERT INTO ilios.test (id, text) VALUES (?, ?);
     CQL
@@ -268,12 +267,10 @@ class FutureTest < Minitest::Test
   end
 
   def test_late_callback_on_future_owned_by_dispatcher_does_not_deadlock
-    # A future handed to the dispatcher (a callback registered while it was
-    # pending) that has completed, but whose completion the dispatcher has
-    # not delivered yet, must not run a late-registered callback inline:
-    # that ran user code under the future's mutex while the dispatcher
-    # blocks on the same mutex, deadlocking as soon as the late callback
-    # waited for another future.
+    # A dispatcher-owned future (callback registered while pending) that
+    # completed but was not delivered yet must not run a late-registered
+    # callback inline: user code under the future's mutex deadlocked with
+    # the dispatcher as soon as the callback waited for another future.
     gate = Queue.new
     done = Queue.new
     statement = Ilios::Cassandra.session.prepare(<<~CQL)
