@@ -401,11 +401,11 @@ class FutureTest < Minitest::Test
     statement = Ilios::Cassandra.session.prepare('SELECT * FROM ilios.test;')
     futures = Array.new(4) { Ilios::Cassandra.session.execute_async(statement) }
 
-    futures[0].on_complete {}
+    futures.first.on_complete {}
 
-    assert_raises(Ilios::Cassandra::ExecutionError) { futures[0].on_complete {} }
-    assert_raises(Ilios::Cassandra::ExecutionError) { futures[0].on_success {} }
-    assert_raises(Ilios::Cassandra::ExecutionError) { futures[0].on_failure {} }
+    assert_raises(Ilios::Cassandra::ExecutionError) { futures.first.on_complete {} }
+    assert_raises(Ilios::Cassandra::ExecutionError) { futures.first.on_success {} }
+    assert_raises(Ilios::Cassandra::ExecutionError) { futures.first.on_failure {} }
 
     futures[1].on_success {}
 
@@ -432,6 +432,82 @@ class FutureTest < Minitest::Test
     future.await
 
     assert(done)
+  end
+
+  def test_future_all_yields_no_errors_when_all_futures_succeed
+    statement = Ilios::Cassandra.session.prepare('INSERT INTO ilios.test (id, text) VALUES (?, ?);')
+    futures = Array.new(10) do |i|
+      statement.bind({ id: i + 110_000, text: 'all' })
+      Ilios::Cassandra.session.execute_async(statement)
+    end
+
+    aggregate = Ilios::Cassandra::Future.all(futures)
+    errors = nil
+    aggregate.on_complete { |errs| errors = errs }
+    aggregate.await
+
+    assert_empty(errors)
+  end
+
+  def test_future_all_collects_the_failures
+    statement = Ilios::Cassandra.session.prepare('INSERT INTO ilios.test (id, text) VALUES (?, ?);')
+    statement.bind({ id: 111_000, text: 'ok' })
+    good = Ilios::Cassandra.session.execute_async(statement)
+    bad = Array.new(2) { Ilios::Cassandra.session.prepare_async('foo') }
+
+    aggregate = Ilios::Cassandra::Future.all([good, *bad])
+    errors = nil
+    aggregate.on_complete { |errs| errors = errs }
+    aggregate.await
+
+    assert_equal(2, errors.size)
+    errors.each do |error|
+      assert_kind_of(Ilios::Cassandra::ExecutionError, error)
+      assert_match(/foo/, error.message)
+    end
+  end
+
+  def test_future_all_with_no_futures_resolves_immediately
+    aggregate = Ilios::Cassandra::Future.all([])
+    aggregate.await
+
+    errors = nil
+    aggregate.on_complete { |errs| errors = errs }
+
+    assert_empty(errors)
+  end
+
+  def test_future_all_on_complete_accepts_only_one_callback
+    aggregate = Ilios::Cassandra::Future.all([])
+    aggregate.on_complete {}
+
+    assert_raises(Ilios::Cassandra::ExecutionError) { aggregate.on_complete {} }
+    assert_raises(ArgumentError) { Ilios::Cassandra::Future.all([]).on_complete }
+  end
+
+  def test_future_all_await_returns_after_the_callback_ran
+    statement = Ilios::Cassandra.session.prepare('INSERT INTO ilios.test (id, text) VALUES (?, ?);')
+    statement.bind({ id: 112_000, text: 'x' })
+    future = Ilios::Cassandra.session.execute_async(statement)
+
+    aggregate = Ilios::Cassandra::Future.all([future])
+    done = false
+    aggregate.on_complete do |_errs|
+      sleep(0.2)
+      done = true
+    end
+    aggregate.await
+
+    assert(done)
+  end
+
+  def test_future_all_rejects_futures_that_already_have_callbacks
+    statement = Ilios::Cassandra.session.prepare('SELECT * FROM ilios.test;')
+    future = Ilios::Cassandra.session.execute_async(statement)
+    future.on_success {}
+
+    assert_raises(Ilios::Cassandra::ExecutionError) { Ilios::Cassandra::Future.all([future]) }
+    future.await
   end
 
   def test_on_failure_with_zero_arity_block_still_works
