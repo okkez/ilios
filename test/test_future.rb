@@ -133,7 +133,7 @@ class FutureTest < Minitest::Test
   def test_on_failure_yields_execution_error_when_already_ready
     # invalid query; #await it first so the future is already ready by the
     # time on_failure is registered, exercising the inline path
-    # (future_on_failure_synchronize's cass_future_ready branch) rather than
+    # (future_registration_finish's cass_future_ready branch) rather than
     # the dispatcher.
     future = Ilios::Cassandra.session.prepare_async('foo')
     future.await
@@ -156,9 +156,7 @@ class FutureTest < Minitest::Test
     # all five pool threads and the queue filled up. Registration must stay
     # non-blocking no matter how many futures await delivery.
     gate = Queue.new
-    statement = Ilios::Cassandra.session.prepare(<<~CQL)
-      INSERT INTO ilios.test (id, text) VALUES (?, ?);
-    CQL
+    statement = Ilios::Cassandra.session.prepare('INSERT INTO ilios.test (id, text) VALUES (?, ?);')
 
     gated_futures = Array.new(5) do |i|
       statement.bind({ id: i + 100_000, text: 'gate' })
@@ -190,9 +188,7 @@ class FutureTest < Minitest::Test
     # pool threads, and a fast future registered afterwards waited its FIFO
     # turn behind them (head-of-line blocking). Callbacks must be delivered
     # in completion order instead.
-    insert = Ilios::Cassandra.session.prepare(<<~CQL)
-      INSERT INTO ilios.test (id, text) VALUES (?, ?);
-    CQL
+    insert = Ilios::Cassandra.session.prepare('INSERT INTO ilios.test (id, text) VALUES (?, ?);')
 
     # The fast future gets its own session (its own connection), so that its
     # tiny response does not have to wait on the wire behind the megabytes of
@@ -239,9 +235,7 @@ class FutureTest < Minitest::Test
   def test_pending_futures_are_not_garbage_collected
     # A future with a registered callback must stay alive until the callback
     # ran, even when no Ruby code holds a reference to it any more.
-    statement = Ilios::Cassandra.session.prepare(<<~CQL)
-      INSERT INTO ilios.test (id, text) VALUES (?, ?);
-    CQL
+    statement = Ilios::Cassandra.session.prepare('INSERT INTO ilios.test (id, text) VALUES (?, ?);')
 
     count = 0
     50.times do |i|
@@ -259,9 +253,7 @@ class FutureTest < Minitest::Test
   def test_await_inside_callback_does_not_deadlock
     # The callback runs on the callback-delivery thread; awaiting another
     # future from there must not deadlock.
-    insert = Ilios::Cassandra.session.prepare(<<~CQL)
-      INSERT INTO ilios.test (id, text) VALUES (?, ?);
-    CQL
+    insert = Ilios::Cassandra.session.prepare('INSERT INTO ilios.test (id, text) VALUES (?, ?);')
     insert.bind({ id: 104_000, text: 'x' * (1024 * 1024) })
     outer = Ilios::Cassandra.session.execute_async(insert)
 
@@ -284,9 +276,7 @@ class FutureTest < Minitest::Test
     # the dispatcher as soon as the callback waited for another future.
     gate = Queue.new
     done = Queue.new
-    statement = Ilios::Cassandra.session.prepare(<<~CQL)
-      INSERT INTO ilios.test (id, text) VALUES (?, ?);
-    CQL
+    statement = Ilios::Cassandra.session.prepare('INSERT INTO ilios.test (id, text) VALUES (?, ?);')
 
     statement.bind({ id: 106_000, text: 'gate' })
     gated = Ilios::Cassandra.session.execute_async(statement)
@@ -313,7 +303,7 @@ class FutureTest < Minitest::Test
       done << :ok
     end
 
-    assert_equal(:ok, done.pop(timeout: 15))
+    assert_equal(:ok, done.pop(timeout: 15), 'late-registered callback did not run within 15s (deadlock?)')
     releaser.join
     [gated, future_a, future_b].each(&:await)
   end
@@ -321,9 +311,7 @@ class FutureTest < Minitest::Test
   def test_concurrent_awaits_all_return_after_the_callback_ran
     # Every #await must honor the "returns after the callbacks ran"
     # contract, including a second await racing the first one.
-    statement = Ilios::Cassandra.session.prepare(<<~CQL)
-      INSERT INTO ilios.test (id, text) VALUES (?, ?);
-    CQL
+    statement = Ilios::Cassandra.session.prepare('INSERT INTO ilios.test (id, text) VALUES (?, ?);')
     statement.bind({ id: 108_000, text: 'x' })
     future = Ilios::Cassandra.session.execute_async(statement)
 

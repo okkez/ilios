@@ -3,7 +3,7 @@
 #include <pthread.h>
 
 // Longest a blocked #await goes between dispatcher liveness re-checks.
-#define DISPATCH_AWAIT_TIMEOUT_NS (500ULL * 1000 * 1000)
+#define DISPATCH_AWAIT_RECHECK_INTERVAL_NS (500ULL * 1000 * 1000)
 
 typedef struct future_dispatch_node
 {
@@ -123,9 +123,10 @@ static const rb_data_type_t dispatch_registry_data_type = {
     0,
 };
 
-// Runs on a cpp-driver IO thread (or on the registering thread when the
-// future resolved before cass_future_set_callback returned), without the
-// GVL: no Ruby API may be called here.
+// Runs on a cpp-driver IO thread — or, when the future resolved before
+// cass_future_set_callback returned, on the registering thread (which
+// holds the GVL). Treat it as a no-GVL context either way: no Ruby API
+// may be called here.
 static void future_completed_native_cb(CassFuture *future, void *data)
 {
     future_dispatch_node *node = (future_dispatch_node *)data;
@@ -169,7 +170,7 @@ static void dispatch_interrupt_ubf(void *ptr)
 static void *dispatch_await_wait(void *ptr)
 {
     dispatch_await_ctx *ctx = (dispatch_await_ctx *)ptr;
-    uint64_t deadline = uv_hrtime() + DISPATCH_AWAIT_TIMEOUT_NS;
+    uint64_t deadline = uv_hrtime() + DISPATCH_AWAIT_RECHECK_INTERVAL_NS;
 
     uv_mutex_lock(&dispatch.mutex);
     while (!ctx->interrupted) {
@@ -312,6 +313,31 @@ static VALUE dispatch_report_error(VALUE errinfo)
     return Qnil;
 }
 
+// Reports a StandardError raised by a callback and swallows it; re-raises
+// everything else, unwinding the calling thread.
+static void dispatch_handle_callback_unwind(int state)
+{
+    VALUE errinfo = rb_errinfo();
+
+    if (RTEST(rb_obj_is_kind_of(errinfo, rb_eStandardError))) {
+        int report_state = 0;
+
+        rb_set_errinfo(Qnil);
+        // A raising callback must not stop delivery for the other
+        // futures: report it and keep dispatching. The report is
+        // protected too — a broken $stderr must not kill the dispatcher.
+        rb_protect(dispatch_report_error, errinfo, &report_state);
+        if (report_state) {
+            rb_set_errinfo(Qnil);
+        }
+    } else {
+        // Thread#kill, SystemExit etc. unwind this thread (recreated
+        // lazily); errinfo stays in place because rb_jump_tag does not
+        // carry the payload itself.
+        rb_jump_tag(state);
+    }
+}
+
 // Yields the callbacks of one completed future, then marks it delivered so
 // #await returns only after the callbacks ran, and wakes the awaiters.
 static void dispatch_process_node(future_dispatch_node *node)
@@ -345,25 +371,7 @@ static void dispatch_process_node(future_dispatch_node *node)
     }
 
     if (state) {
-        VALUE errinfo = rb_errinfo();
-
-        if (RTEST(rb_obj_is_kind_of(errinfo, rb_eStandardError))) {
-            int report_state = 0;
-
-            rb_set_errinfo(Qnil);
-            // A raising callback must not stop delivery for the other
-            // futures: report it and keep dispatching. The report is
-            // protected too — a broken $stderr must not kill the dispatcher.
-            rb_protect(dispatch_report_error, errinfo, &report_state);
-            if (report_state) {
-                rb_set_errinfo(Qnil);
-            }
-        } else {
-            // Thread#kill, SystemExit etc. unwind this thread (recreated
-            // lazily); errinfo stays in place because rb_jump_tag does not
-            // carry the payload itself.
-            rb_jump_tag(state);
-        }
+        dispatch_handle_callback_unwind(state);
     }
 }
 
@@ -482,6 +490,8 @@ static void future_ensure_dispatch_registration(VALUE future, CassandraFuture *c
 // the dispatcher; `for_success` picks which outcome the block handles.
 static void future_registration_finish(CassandraFuture *cassandra_future, bool for_success)
 {
+    bool succeeded;
+
     if (!cass_future_ready(cassandra_future->future)) {
         // Unresolved: already handed to the dispatcher by
         // future_ensure_dispatch_registration.
@@ -494,8 +504,8 @@ static void future_registration_finish(CassandraFuture *cassandra_future, bool f
         // for another future.
         return;
     }
-    if (!cassandra_future->yielded &&
-        (cass_future_error_code(cassandra_future->future) == CASS_OK) == for_success) {
+    succeeded = cass_future_error_code(cassandra_future->future) == CASS_OK;
+    if (!cassandra_future->yielded && succeeded == for_success) {
         cassandra_future->yielded = true;
         if (for_success) {
             future_result_success_yield(cassandra_future);
