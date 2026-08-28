@@ -331,6 +331,109 @@ class FutureTest < Minitest::Test
     assert_equal([true, true], awaiters.map(&:value))
   end
 
+  def test_on_complete_yields_result_and_nil_on_success
+    statement = Ilios::Cassandra.session.prepare('SELECT * FROM ilios.test;')
+    future = Ilios::Cassandra.session.execute_async(statement)
+
+    value = :unset
+    error = :unset
+    future.on_complete do |v, e|
+      value = v
+      error = e
+    end
+    future.await
+
+    assert_kind_of(Ilios::Cassandra::Result, value)
+    assert_nil(error)
+  end
+
+  def test_on_complete_yields_statement_for_prepare_async
+    future = Ilios::Cassandra.session.prepare_async('SELECT * FROM ilios.test;')
+
+    value = nil
+    future.on_complete { |v, _e| value = v }
+    future.await
+
+    assert_kind_of(Ilios::Cassandra::Statement, value)
+  end
+
+  def test_on_complete_yields_nil_and_execution_error_on_failure
+    future = Ilios::Cassandra.session.prepare_async('foo')
+
+    value = :unset
+    error = nil
+    future.on_complete do |v, e|
+      value = v
+      error = e
+    end
+    future.await
+
+    assert_nil(value)
+    assert_kind_of(Ilios::Cassandra::ExecutionError, error)
+    assert_kind_of(Integer, error.code)
+    assert_match(/foo/, error.message)
+  end
+
+  def test_on_complete_runs_inline_when_already_resolved
+    future = Ilios::Cassandra.session.prepare_async('foo')
+    future.await
+
+    error = nil
+    future.on_complete { |_v, e| error = e }
+    future.await
+
+    assert_kind_of(Ilios::Cassandra::ExecutionError, error)
+  end
+
+  def test_on_complete_is_called_exactly_once
+    statement = Ilios::Cassandra.session.prepare('SELECT * FROM ilios.test;')
+    future = Ilios::Cassandra.session.execute_async(statement)
+
+    count = 0
+    future.on_complete { count += 1 }
+    future.await
+    future.await
+
+    assert_equal(1, count)
+  end
+
+  def test_on_complete_cannot_be_combined_with_other_callbacks
+    statement = Ilios::Cassandra.session.prepare('SELECT * FROM ilios.test;')
+    futures = Array.new(4) { Ilios::Cassandra.session.execute_async(statement) }
+
+    futures[0].on_complete {}
+
+    assert_raises(Ilios::Cassandra::ExecutionError) { futures[0].on_complete {} }
+    assert_raises(Ilios::Cassandra::ExecutionError) { futures[0].on_success {} }
+    assert_raises(Ilios::Cassandra::ExecutionError) { futures[0].on_failure {} }
+
+    futures[1].on_success {}
+
+    assert_raises(Ilios::Cassandra::ExecutionError) { futures[1].on_complete {} }
+
+    futures[2].on_failure {}
+
+    assert_raises(Ilios::Cassandra::ExecutionError) { futures[2].on_complete {} }
+    assert_raises(ArgumentError) { futures[3].on_complete }
+
+    futures.each(&:await)
+  end
+
+  def test_await_returns_after_on_complete_ran
+    statement = Ilios::Cassandra.session.prepare('INSERT INTO ilios.test (id, text) VALUES (?, ?);')
+    statement.bind({ id: 109_000, text: 'x' })
+    future = Ilios::Cassandra.session.execute_async(statement)
+
+    done = false
+    future.on_complete do
+      sleep(0.2)
+      done = true
+    end
+    future.await
+
+    assert(done)
+  end
+
   def test_on_failure_with_zero_arity_block_still_works
     # invalid query so the failure path actually runs; a lambda instead of a
     # block so that passing the error to a zero-arity callback raises
