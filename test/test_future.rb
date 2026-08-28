@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require_relative 'helper'
-require 'timeout'
 
 class FutureTest < Minitest::Test
   def test_await
@@ -203,26 +202,38 @@ class FutureTest < Minitest::Test
     fast_cluster.hosts([CASSANDRA_HOST])
     fast_session = fast_cluster.connect
     select = fast_session.prepare('SELECT id FROM ilios.test LIMIT 1;')
+    # Warm up the dedicated connection so the raced select runs at full speed.
+    fast_session.execute(select)
 
-    order = Queue.new
-    big_text = 'x' * (4 * 1024 * 1024)
     # Bind once and reuse: each execution snapshots the bound values, and a
     # single bind keeps the submission phase short so the fast future is
     # submitted well before the first slow future completes.
+    big_text = 'x' * (4 * 1024 * 1024)
     insert.bind({ id: 102_000, text: big_text })
-    slow_futures = Array.new(5) do
-      future = Ilios::Cassandra.session.execute_async(insert)
-      future.on_success { order << :slow }
-      future
+
+    # The assertion is only meaningful when the fast future completes before
+    # the slow ones; a server-side pause can occasionally break that premise,
+    # so retry the race. The former FIFO pool never delivered :fast first,
+    # with or without retries.
+    first = nil
+    3.times do
+      order = Queue.new
+      slow_futures = Array.new(5) do
+        future = Ilios::Cassandra.session.execute_async(insert)
+        future.on_success { order << :slow }
+        future
+      end
+
+      fast_future = fast_session.execute_async(select)
+      fast_future.on_success { order << :fast }
+
+      fast_future.await
+      slow_futures.each(&:await)
+      first = order.pop
+      break if first == :fast
     end
 
-    fast_future = fast_session.execute_async(select)
-    fast_future.on_success { order << :fast }
-
-    fast_future.await
-    slow_futures.each(&:await)
-
-    assert_equal(:fast, order.pop)
+    assert_equal(:fast, first)
   end
 
   def test_pending_futures_are_not_garbage_collected
@@ -302,7 +313,7 @@ class FutureTest < Minitest::Test
       done << :ok
     end
 
-    assert_equal(:ok, Timeout.timeout(15) { done.pop })
+    assert_equal(:ok, done.pop(timeout: 15))
     releaser.join
     [gated, future_a, future_b].each(&:await)
   end

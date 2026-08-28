@@ -20,6 +20,7 @@ VALUE id_to_a;
 VALUE id_new;
 VALUE id_alive;
 VALUE id_report_on_exception;
+VALUE id_full_message;
 VALUE id_code;
 VALUE sym_unsupported_column_type;
 
@@ -142,6 +143,7 @@ void Init_ilios(void)
     id_new = rb_intern("new");
     id_alive = rb_intern("alive?");
     id_report_on_exception = rb_intern("report_on_exception=");
+    id_full_message = rb_intern("full_message");
     id_code = rb_intern("@code");
     sym_unsupported_column_type = ID2SYM(rb_intern("unsupported_column_type"));
 

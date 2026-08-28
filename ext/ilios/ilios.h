@@ -36,8 +36,16 @@ typedef enum {
   execute_async
 } future_kind;
 
-// Node in the callback dispatch lists (defined in future.c).
-typedef struct future_dispatch_node future_dispatch_node;
+// Who is responsible for delivering a future's callbacks.
+typedef enum {
+  // No native completion callback registered; callbacks (if any) were
+  // handled inline at registration time.
+  dispatch_not_registered,
+  // The dispatcher owns delivery of this future's completion.
+  dispatch_owned,
+  // The dispatcher delivered the completion and posted the semaphore.
+  dispatch_delivered
+} future_dispatch_state;
 
 typedef enum {
   idempotency_unset,
@@ -99,14 +107,8 @@ typedef struct
     uv_sem_t sem;
     bool already_waited;
     bool yielded;
-    // A native completion callback was registered with the cpp-driver and
-    // the future was handed to the dispatcher, which posts the semaphore
-    // once the callbacks were delivered.
-    bool dispatch_registered;
-    // The future's node in the dispatch lists while the dispatcher still
-    // owns its completion; NULL once the completion was delivered (or when
-    // the future was never handed over). Guarded by proc_mutex.
-    future_dispatch_node *dispatch_node;
+    // Guarded by proc_mutex.
+    future_dispatch_state dispatch_state;
 } CassandraFuture;
 
 extern const rb_data_type_t cassandra_cluster_data_type;
@@ -133,6 +135,7 @@ extern VALUE id_to_a;
 extern VALUE id_new;
 extern VALUE id_alive;
 extern VALUE id_report_on_exception;
+extern VALUE id_full_message;
 extern VALUE id_code;
 extern VALUE sym_unsupported_column_type;
 

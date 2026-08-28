@@ -2,16 +2,15 @@
 
 #include <pthread.h>
 
-// Longest single sleep in #await before re-checking that the dispatcher is
-// still alive.
+// Longest a blocked #await goes between dispatcher liveness re-checks.
 #define DISPATCH_AWAIT_TIMEOUT_NS (500ULL * 1000 * 1000)
 
-struct future_dispatch_node
+typedef struct future_dispatch_node
 {
     VALUE future_obj;
     struct future_dispatch_node *prev;
     struct future_dispatch_node *next;
-};
+} future_dispatch_node;
 
 typedef struct
 {
@@ -42,11 +41,6 @@ static struct
 static VALUE dispatcher_thread;
 /* Serializes dispatcher creation so it stays a single thread. */
 static VALUE dispatcher_mutex;
-
-typedef struct
-{
-    bool interrupted;
-} dispatch_wait_ctx;
 
 typedef struct
 {
@@ -146,51 +140,53 @@ static void future_completed_native_cb(CassFuture *future, void *data)
 
 static void *dispatch_wait_for_completion(void *ptr)
 {
-    dispatch_wait_ctx *ctx = (dispatch_wait_ctx *)ptr;
+    bool *interrupted = (bool *)ptr;
 
     uv_mutex_lock(&dispatch.mutex);
-    while (dispatch.completed.head == NULL && !ctx->interrupted) {
+    while (dispatch.completed.head == NULL && !*interrupted) {
         uv_cond_wait(&dispatch.cond, &dispatch.mutex);
     }
     uv_mutex_unlock(&dispatch.mutex);
     return NULL;
 }
 
-static void dispatch_wait_ubf(void *ptr)
+// Unblock function shared by the no-GVL waits below; `ptr` is the wait's
+// `interrupted` flag.
+static void dispatch_interrupt_ubf(void *ptr)
 {
-    dispatch_wait_ctx *ctx = (dispatch_wait_ctx *)ptr;
+    bool *interrupted = (bool *)ptr;
 
     uv_mutex_lock(&dispatch.mutex);
-    ctx->interrupted = true;
+    *interrupted = true;
     uv_cond_broadcast(&dispatch.cond);
     uv_mutex_unlock(&dispatch.mutex);
 }
 
-// One bounded sleep of an awaiting thread. The semaphore is tried under
+// One bounded wait of an awaiting thread. The semaphore is tried under
 // `dispatch.mutex`, so the dispatcher's post-then-broadcast cannot slip
-// between the check and the wait.
+// between the check and the wait; broadcasts for other futures are absorbed
+// here without re-taking the GVL.
 static void *dispatch_await_wait(void *ptr)
 {
     dispatch_await_ctx *ctx = (dispatch_await_ctx *)ptr;
+    uint64_t deadline = uv_hrtime() + DISPATCH_AWAIT_TIMEOUT_NS;
 
     uv_mutex_lock(&dispatch.mutex);
-    if (uv_sem_trywait(ctx->sem) == 0) {
-        ctx->acquired = true;
-    } else if (!ctx->interrupted) {
-        uv_cond_timedwait(&dispatch.cond, &dispatch.mutex, DISPATCH_AWAIT_TIMEOUT_NS);
+    while (!ctx->interrupted) {
+        uint64_t now;
+
+        if (uv_sem_trywait(ctx->sem) == 0) {
+            ctx->acquired = true;
+            break;
+        }
+        now = uv_hrtime();
+        if (now >= deadline) {
+            break;
+        }
+        uv_cond_timedwait(&dispatch.cond, &dispatch.mutex, deadline - now);
     }
     uv_mutex_unlock(&dispatch.mutex);
     return NULL;
-}
-
-static void dispatch_await_ubf(void *ptr)
-{
-    dispatch_await_ctx *ctx = (dispatch_await_ctx *)ptr;
-
-    uv_mutex_lock(&dispatch.mutex);
-    ctx->interrupted = true;
-    uv_cond_broadcast(&dispatch.cond);
-    uv_mutex_unlock(&dispatch.mutex);
 }
 
 static future_dispatch_node *dispatch_pop_completed(void)
@@ -273,7 +269,7 @@ static VALUE future_result_yielder_synchronize(VALUE future)
     GET_FUTURE(future, cassandra_future);
 
     // Delivery has begun: registrations from now on yield inline again.
-    cassandra_future->dispatch_node = NULL;
+    cassandra_future->dispatch_state = dispatch_delivered;
 
     if (!cassandra_future->yielded) {
         if (cass_future_error_code(cassandra_future->future) == CASS_OK) {
@@ -302,7 +298,7 @@ static VALUE dispatch_yield_body(VALUE future)
 
 static VALUE dispatch_report_error(VALUE errinfo)
 {
-    rb_io_write(rb_stderr, rb_funcall(errinfo, rb_intern("full_message"), 0));
+    rb_io_write(rb_stderr, rb_funcall(errinfo, id_full_message, 0));
     return Qnil;
 }
 
@@ -319,9 +315,9 @@ static void dispatch_process_node(future_dispatch_node *node)
     rb_protect(dispatch_yield_body, (VALUE)future, &state);
 
     GET_FUTURE((VALUE)future, cassandra_future);
-    // Usually cleared by the yielder already; also covers an unwind that
-    // hit first, so the freed node never looks dispatcher-owned.
-    cassandra_future->dispatch_node = NULL;
+    // Usually set by the yielder already; also covers an unwind that hit
+    // first, so the future never stays marked dispatcher-owned.
+    cassandra_future->dispatch_state = dispatch_delivered;
     uv_sem_post(&cassandra_future->sem);
     uv_mutex_lock(&dispatch.mutex);
     uv_cond_broadcast(&dispatch.cond);
@@ -358,9 +354,9 @@ static void dispatch_wait_and_process_one(void)
     future_dispatch_node *node = dispatch_pop_completed();
 
     if (node == NULL) {
-        dispatch_wait_ctx ctx = { false };
+        bool interrupted = false;
 
-        rb_thread_call_without_gvl(dispatch_wait_for_completion, &ctx, dispatch_wait_ubf, &ctx);
+        rb_thread_call_without_gvl(dispatch_wait_for_completion, &interrupted, dispatch_interrupt_ubf, &interrupted);
         node = dispatch_pop_completed();
     }
     if (node) {
@@ -418,7 +414,7 @@ static void future_register_dispatch(VALUE future, CassandraFuture *cassandra_fu
 
     rc = cass_future_set_callback(cassandra_future->future, future_completed_native_cb, node);
     if (rc != CASS_OK) {
-        // Cannot happen: dispatch_registered guards against registering the
+        // Cannot happen: dispatch_state guards against registering the
         // native callback twice. Unpin and fail loudly rather than leak.
         uv_mutex_lock(&dispatch.mutex);
         dispatch_list_remove(&dispatch.pending, node);
@@ -427,8 +423,7 @@ static void future_register_dispatch(VALUE future, CassandraFuture *cassandra_fu
         rb_raise(eExecutionError, "Failed to register completion callback: %s", cass_error_desc(rc));
     }
 
-    cassandra_future->dispatch_registered = true;
-    cassandra_future->dispatch_node = node;
+    cassandra_future->dispatch_state = dispatch_owned;
 }
 
 VALUE future_create(CassFuture *future, VALUE session, VALUE statement, future_kind kind)
@@ -446,8 +441,7 @@ VALUE future_create(CassFuture *future, VALUE session, VALUE statement, future_k
     uv_sem_init(&cassandra_future->sem, 0);
     cassandra_future->already_waited = false;
     cassandra_future->yielded = false;
-    cassandra_future->dispatch_registered = false;
-    cassandra_future->dispatch_node = NULL;
+    cassandra_future->dispatch_state = dispatch_not_registered;
 
     return cassandra_future_obj;
 }
@@ -458,7 +452,8 @@ VALUE future_create(CassFuture *future, VALUE session, VALUE statement, future_k
 // overtake the store — it synchronizes on proc_mutex, which the caller holds.
 static void future_ensure_dispatch_registration(VALUE future, CassandraFuture *cassandra_future)
 {
-    if (!cassandra_future->dispatch_registered && !cass_future_ready(cassandra_future->future)) {
+    if (cassandra_future->dispatch_state == dispatch_not_registered &&
+        !cass_future_ready(cassandra_future->future)) {
         future_register_dispatch(future, cassandra_future);
     }
 }
@@ -466,48 +461,74 @@ static void future_ensure_dispatch_registration(VALUE future, CassandraFuture *c
 // Shared registration tail, called under proc_mutex after the block was
 // stored. Yields inline when the future is resolved and no longer owned by
 // the dispatcher; `for_success` picks which outcome the block handles.
-static VALUE future_registration_finish(VALUE future, CassandraFuture *cassandra_future, bool for_success)
+static void future_registration_finish(CassandraFuture *cassandra_future, bool for_success)
 {
-    if (cass_future_ready(cassandra_future->future)) {
-        // The dispatcher posts the semaphore itself once it has yielded;
-        // posting here too would let #await return before that happens.
-        if (!cassandra_future->dispatch_registered) {
-            uv_sem_post(&cassandra_future->sem);
-        }
-        if (cassandra_future->dispatch_node != NULL) {
-            // Still owned by the dispatcher, which will see the block just
-            // stored. Yielding inline here — user code under proc_mutex —
-            // would deadlock with the dispatcher blocking on this mutex as
-            // soon as the block waited for another future.
-            return future;
-        }
-        if (!cassandra_future->yielded &&
-            (cass_future_error_code(cassandra_future->future) == CASS_OK) == for_success) {
-            cassandra_future->yielded = true;
-            if (for_success) {
-                future_result_success_yield(cassandra_future);
-            } else {
-                future_result_failure_yield(cassandra_future);
-            }
-        }
-        return future;
+    if (!cass_future_ready(cassandra_future->future)) {
+        // Unresolved: already handed to the dispatcher by
+        // future_ensure_dispatch_registration.
+        return;
     }
-
-    return future;
+    // The dispatcher posts the semaphore itself once it has yielded;
+    // posting here too would let #await return before that happens.
+    if (cassandra_future->dispatch_state == dispatch_not_registered) {
+        uv_sem_post(&cassandra_future->sem);
+    }
+    if (cassandra_future->dispatch_state == dispatch_owned) {
+        // The dispatcher will see the block just stored. Yielding inline
+        // here — user code under proc_mutex — would deadlock with the
+        // dispatcher blocking on this mutex as soon as the block waited
+        // for another future.
+        return;
+    }
+    if (!cassandra_future->yielded &&
+        (cass_future_error_code(cassandra_future->future) == CASS_OK) == for_success) {
+        cassandra_future->yielded = true;
+        if (for_success) {
+            future_result_success_yield(cassandra_future);
+        } else {
+            future_result_failure_yield(cassandra_future);
+        }
+    }
 }
 
-static VALUE future_on_success_synchronize(VALUE future)
+typedef struct
 {
+    VALUE future;
+    bool for_success;
+} future_registration_args;
+
+static VALUE future_registration_synchronize(VALUE arg)
+{
+    future_registration_args *args = (future_registration_args *)arg;
     CassandraFuture *cassandra_future;
     VALUE block;
 
-    GET_FUTURE(future, cassandra_future);
+    GET_FUTURE(args->future, cassandra_future);
 
     block = rb_block_proc();
-    future_ensure_dispatch_registration(future, cassandra_future);
-    RB_OBJ_WRITE(future, &cassandra_future->on_success_block, block);
+    future_ensure_dispatch_registration(args->future, cassandra_future);
+    RB_OBJ_WRITE(args->future,
+                 args->for_success ? &cassandra_future->on_success_block : &cassandra_future->on_failure_block,
+                 block);
+    future_registration_finish(cassandra_future, args->for_success);
+    return args->future;
+}
 
-    return future_registration_finish(future, cassandra_future, true);
+static VALUE future_register_callback(VALUE self, bool for_success)
+{
+    CassandraFuture *cassandra_future;
+    future_registration_args args = { self, for_success };
+
+    GET_FUTURE(self, cassandra_future);
+
+    if (for_success ? cassandra_future->on_success_block : cassandra_future->on_failure_block) {
+        rb_raise(eExecutionError, "It should not call twice");
+    }
+    if (!rb_block_given_p()) {
+        rb_raise(rb_eArgError, "no block given");
+    }
+
+    return rb_mutex_synchronize(cassandra_future->proc_mutex, future_registration_synchronize, (VALUE)&args);
 }
 
 /**
@@ -525,32 +546,7 @@ static VALUE future_on_success_synchronize(VALUE future)
  */
 static VALUE future_on_success(VALUE self)
 {
-    CassandraFuture *cassandra_future;
-
-    GET_FUTURE(self, cassandra_future);
-
-    if (cassandra_future->on_success_block) {
-        rb_raise(eExecutionError, "It should not call twice");
-    }
-    if (!rb_block_given_p()) {
-        rb_raise(rb_eArgError, "no block given");
-    }
-
-    return rb_mutex_synchronize(cassandra_future->proc_mutex, future_on_success_synchronize, self);
-}
-
-static VALUE future_on_failure_synchronize(VALUE future)
-{
-    CassandraFuture *cassandra_future;
-    VALUE block;
-
-    GET_FUTURE(future, cassandra_future);
-
-    block = rb_block_proc();
-    future_ensure_dispatch_registration(future, cassandra_future);
-    RB_OBJ_WRITE(future, &cassandra_future->on_failure_block, block);
-
-    return future_registration_finish(future, cassandra_future, false);
+    return future_register_callback(self, true);
 }
 
 /**
@@ -568,18 +564,7 @@ static VALUE future_on_failure_synchronize(VALUE future)
  */
 static VALUE future_on_failure(VALUE self)
 {
-    CassandraFuture *cassandra_future;
-
-    GET_FUTURE(self, cassandra_future);
-
-    if (cassandra_future->on_failure_block) {
-        rb_raise(eExecutionError, "It should not call twice");
-    }
-    if (!rb_block_given_p()) {
-        rb_raise(rb_eArgError, "no block given");
-    }
-
-    return rb_mutex_synchronize(cassandra_future->proc_mutex, future_on_failure_synchronize, self);
+    return future_register_callback(self, false);
 }
 
 /**
@@ -591,8 +576,7 @@ static VALUE future_on_failure(VALUE self)
 static VALUE future_await(VALUE self)
 {
     CassandraFuture *cassandra_future;
-    bool has_callback;
-    bool dispatch_registered;
+    future_dispatch_state dispatch_state;
 
     GET_FUTURE(self, cassandra_future);
 
@@ -602,29 +586,34 @@ static VALUE future_await(VALUE self)
         return self;
     }
     cassandra_future->already_waited = true;
-    dispatch_registered = cassandra_future->dispatch_registered;
+    dispatch_state = cassandra_future->dispatch_state;
     rb_mutex_unlock(cassandra_future->proc_mutex);
 
-    if (!dispatch_registered) {
-        // No dispatcher involved (yet): wait on the future itself. For a
-        // dispatcher-owned future the semaphore below covers completion too.
+    if (dispatch_state == dispatch_not_registered) {
+        bool has_callback;
+
+        // No dispatcher involved (yet): wait on the future itself, then
+        // re-read under the mutex so registrations racing with this #await
+        // are observed. For a dispatcher-involved future the semaphore
+        // paths below cover completion too.
         nogvl_future_wait(cassandra_future->future);
-    }
-    // Re-read after the wait so registrations racing with this #await are
-    // observed.
-    rb_mutex_lock(cassandra_future->proc_mutex);
-    has_callback = cassandra_future->on_success_block || cassandra_future->on_failure_block;
-    dispatch_registered = cassandra_future->dispatch_registered;
-    rb_mutex_unlock(cassandra_future->proc_mutex);
+        rb_mutex_lock(cassandra_future->proc_mutex);
+        has_callback = cassandra_future->on_success_block || cassandra_future->on_failure_block;
+        dispatch_state = cassandra_future->dispatch_state;
+        rb_mutex_unlock(cassandra_future->proc_mutex);
 
-    if (!has_callback) {
-        return self;
+        if (!has_callback) {
+            return self;
+        }
+        if (dispatch_state == dispatch_not_registered) {
+            // Inline-only callbacks: registration already posted the semaphore.
+            nogvl_sem_wait(&cassandra_future->sem);
+            return self;
+        }
     }
-    if (!dispatch_registered) {
-        // Inline-only callbacks: registration already posted the semaphore.
-        nogvl_sem_wait(&cassandra_future->sem);
-        return self;
-    }
+    // Dispatcher involved. A callback is guaranteed to exist: registration
+    // leaves dispatch_not_registered and stores the block inside the same
+    // proc_mutex critical section.
     if (rb_thread_current() == dispatcher_thread) {
         // Called from inside a callback: blocking on the semaphore would
         // deadlock because this thread is the one that posts it. Yield the
@@ -641,7 +630,7 @@ static VALUE future_await(VALUE self)
     while (1) {
         dispatch_await_ctx ctx = { &cassandra_future->sem, false, false };
 
-        rb_thread_call_without_gvl(dispatch_await_wait, &ctx, dispatch_await_ubf, &ctx);
+        rb_thread_call_without_gvl(dispatch_await_wait, &ctx, dispatch_interrupt_ubf, &ctx.interrupted);
         if (ctx.acquired) {
             break;
         }
