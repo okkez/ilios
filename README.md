@@ -250,6 +250,49 @@ Notes:
 - An exception raised by a callback is reported to `$stderr` and does not stop callback delivery for other futures.
 - The underlying DataStax C/C++ driver is not fork-safe: after `fork`, the child process must not use inherited ilios objects — nor rely on garbage-collecting them, since freeing an inherited `Session` waits forever for driver threads that do not exist in the child.
 
+### Completion callback and future aggregation
+
+`Ilios::Cassandra::Future#on_complete` handles both outcomes with a single
+callback: the block receives `(value, nil)` on success and
+`(nil, error)` on failure, exactly once. It cannot be combined with
+`on_success`/`on_failure` on the same future.
+
+```ruby
+result_future = session.execute_async(statement)
+result_future.on_complete { |result, error|
+  if error
+    log_failure(error)
+  else
+    process(result)
+  end
+}
+```
+
+`Ilios::Cassandra::Future.all` aggregates many futures and resolves once all
+of them completed. Its `on_complete` receives the failures — an empty array
+when everything succeeded — so a batch writer can decide commit/rollback in
+one place:
+
+```ruby
+futures = rows.map { |row|
+  statement.bind(row)
+  session.execute_async(statement)
+}
+
+aggregate = Ilios::Cassandra::Future.all(futures)
+aggregate.on_complete { |errors|
+  if errors.empty?
+    commit_chunk
+  else
+    rollback_chunk(errors)
+  end
+}
+```
+
+`Future.all` registers `on_complete` on every future, so the futures must
+not carry their own callbacks. The aggregate also responds to `#await`,
+which waits for all futures and the registered callback.
+
 ## Contributing
 
 Bug reports and pull requests are welcome on GitHub at https://github.com/Watson1978/ilios.

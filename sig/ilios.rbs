@@ -90,7 +90,15 @@ module Ilios
     class Future
       def on_success: () { (Ilios::Cassandra::Result | Ilios::Cassandra::Statement) -> void } -> self
       def on_failure: () { (Ilios::Cassandra::ExecutionError) -> void } -> self
+      def on_complete: () { (Ilios::Cassandra::Result | Ilios::Cassandra::Statement | nil, Ilios::Cassandra::ExecutionError | nil) -> void } -> self
       def await: () -> self
+      def self.all: (Array[Ilios::Cassandra::Future] futures) -> Ilios::Cassandra::Future::All
+
+      class All
+        def initialize: (Array[Ilios::Cassandra::Future] futures) -> void
+        def on_complete: () { (Array[Ilios::Cassandra::ExecutionError]) -> void } -> self
+        def await: () -> self
+      end
     end
 
     class Result
