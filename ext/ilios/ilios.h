@@ -43,7 +43,8 @@ typedef enum {
   dispatch_not_registered,
   // The dispatcher owns delivery of this future's completion.
   dispatch_owned,
-  // The dispatcher delivered the completion and posted the semaphore.
+  // The dispatcher began delivering the completion; registrations yield
+  // inline again.
   dispatch_delivered
 } future_dispatch_state;
 
@@ -104,11 +105,13 @@ typedef struct
     VALUE on_failure_block;
     VALUE proc_mutex;
 
-    uv_sem_t sem;
     bool already_waited;
     bool yielded;
     // Guarded by proc_mutex.
     future_dispatch_state dispatch_state;
+    // Set once the dispatcher finished running this future's callbacks;
+    // guarded by the dispatch mutex in future.c.
+    bool delivered;
 } CassandraFuture;
 
 extern const rb_data_type_t cassandra_cluster_data_type;
@@ -149,7 +152,6 @@ extern VALUE future_create(CassFuture *future, VALUE session, VALUE statement, f
 extern void nogvl_future_wait(CassFuture *future);
 extern CassFuture *nogvl_session_prepare(CassSession* session, VALUE query);
 extern CassFuture *nogvl_session_execute(CassSession* session, CassStatement* statement);
-extern void nogvl_sem_wait(uv_sem_t *sem);
 
 extern void statement_default_config(CassandraStatement *cassandra_statement);
 extern CassStatement *statement_build_for_execution(CassandraStatement *cassandra_statement);

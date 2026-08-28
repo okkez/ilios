@@ -44,9 +44,9 @@ static VALUE dispatcher_mutex;
 
 typedef struct
 {
-    uv_sem_t *sem;
+    const bool *delivered;
     bool interrupted;
-    bool acquired;
+    bool done;
 } dispatch_await_ctx;
 
 static void future_mark(void *ptr);
@@ -162,8 +162,8 @@ static void dispatch_interrupt_ubf(void *ptr)
     uv_mutex_unlock(&dispatch.mutex);
 }
 
-// One bounded wait of an awaiting thread. The semaphore is tried under
-// `dispatch.mutex`, so the dispatcher's post-then-broadcast cannot slip
+// One bounded wait of an awaiting thread. The delivered flag is read under
+// `dispatch.mutex`, so the dispatcher's set-then-broadcast cannot slip
 // between the check and the wait; broadcasts for other futures are absorbed
 // here without re-taking the GVL.
 static void *dispatch_await_wait(void *ptr)
@@ -175,8 +175,8 @@ static void *dispatch_await_wait(void *ptr)
     while (!ctx->interrupted) {
         uint64_t now;
 
-        if (uv_sem_trywait(ctx->sem) == 0) {
-            ctx->acquired = true;
+        if (*ctx->delivered) {
+            ctx->done = true;
             break;
         }
         now = uv_hrtime();
@@ -187,6 +187,17 @@ static void *dispatch_await_wait(void *ptr)
     }
     uv_mutex_unlock(&dispatch.mutex);
     return NULL;
+}
+
+// Whether the dispatcher finished running this future's callbacks.
+static bool future_delivered_p(CassandraFuture *cassandra_future)
+{
+    bool delivered;
+
+    uv_mutex_lock(&dispatch.mutex);
+    delivered = cassandra_future->delivered;
+    uv_mutex_unlock(&dispatch.mutex);
+    return delivered;
 }
 
 static future_dispatch_node *dispatch_pop_completed(void)
@@ -302,7 +313,7 @@ static VALUE dispatch_report_error(VALUE errinfo)
     return Qnil;
 }
 
-// Yields the callbacks of one completed future, posts its semaphore so
+// Yields the callbacks of one completed future, then marks it delivered so
 // #await returns only after the callbacks ran, and wakes the awaiters.
 static void dispatch_process_node(future_dispatch_node *node)
 {
@@ -318,8 +329,10 @@ static void dispatch_process_node(future_dispatch_node *node)
     // Usually set by the yielder already; also covers an unwind that hit
     // first, so the future never stays marked dispatcher-owned.
     cassandra_future->dispatch_state = dispatch_delivered;
-    uv_sem_post(&cassandra_future->sem);
+    // The awaiters' signal: unlike the ownership flip above (which happens
+    // when delivery begins), this is set only after the callbacks ran.
     uv_mutex_lock(&dispatch.mutex);
+    cassandra_future->delivered = true;
     uv_cond_broadcast(&dispatch.cond);
     uv_mutex_unlock(&dispatch.mutex);
     xfree(node);
@@ -438,10 +451,10 @@ VALUE future_create(CassFuture *future, VALUE session, VALUE statement, future_k
     cassandra_future->session_obj = session;
     cassandra_future->statement_obj = statement;
     cassandra_future->proc_mutex = rb_mutex_new();
-    uv_sem_init(&cassandra_future->sem, 0);
     cassandra_future->already_waited = false;
     cassandra_future->yielded = false;
     cassandra_future->dispatch_state = dispatch_not_registered;
+    cassandra_future->delivered = false;
 
     return cassandra_future_obj;
 }
@@ -467,11 +480,6 @@ static void future_registration_finish(CassandraFuture *cassandra_future, bool f
         // Unresolved: already handed to the dispatcher by
         // future_ensure_dispatch_registration.
         return;
-    }
-    // The dispatcher posts the semaphore itself once it has yielded;
-    // posting here too would let #await return before that happens.
-    if (cassandra_future->dispatch_state == dispatch_not_registered) {
-        uv_sem_post(&cassandra_future->sem);
     }
     if (cassandra_future->dispatch_state == dispatch_owned) {
         // The dispatcher will see the block just stored. Yielding inline
@@ -606,8 +614,9 @@ static VALUE future_await(VALUE self)
             return self;
         }
         if (dispatch_state == dispatch_not_registered) {
-            // Inline-only callbacks: registration already posted the semaphore.
-            nogvl_sem_wait(&cassandra_future->sem);
+            // Inline-only callbacks already ran: registrations on a resolved
+            // future yield under proc_mutex, and the re-read above is
+            // serialized after them.
             return self;
         }
     }
@@ -615,23 +624,24 @@ static VALUE future_await(VALUE self)
     // leaves dispatch_not_registered and stores the block inside the same
     // proc_mutex critical section.
     if (rb_thread_current() == dispatcher_thread) {
-        // Called from inside a callback: blocking on the semaphore would
-        // deadlock because this thread is the one that posts it. Yield the
-        // completed futures ourselves until this future's callbacks ran.
-        while (uv_sem_trywait(&cassandra_future->sem) != 0) {
+        // Called from inside a callback: sleeping until the delivered flag
+        // is set would deadlock because this thread is the one that sets
+        // it. Yield the completed futures ourselves until this future's
+        // callbacks ran.
+        while (!future_delivered_p(cassandra_future)) {
             dispatch_wait_and_process_one();
         }
         return self;
     }
     // Wait for the dispatcher to deliver this future's callbacks, re-checking
-    // on every wakeup that the dispatcher is still alive to post the
-    // semaphore (it is recreated when found dead).
+    // on every wakeup that the dispatcher is still alive to mark futures
+    // delivered (it is recreated when found dead).
     dispatcher_ensure_thread();
     while (1) {
-        dispatch_await_ctx ctx = { &cassandra_future->sem, false, false };
+        dispatch_await_ctx ctx = { &cassandra_future->delivered, false, false };
 
         rb_thread_call_without_gvl(dispatch_await_wait, &ctx, dispatch_interrupt_ubf, &ctx.interrupted);
-        if (ctx.acquired) {
+        if (ctx.done) {
             break;
         }
         dispatcher_ensure_thread();
@@ -662,7 +672,6 @@ static void future_destroy(void *ptr)
         // holds its own reference to the statement internals.
         cass_statement_free(cassandra_future->executed_statement);
     }
-    uv_sem_destroy(&cassandra_future->sem);
     xfree(cassandra_future);
 }
 
