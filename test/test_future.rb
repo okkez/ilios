@@ -115,7 +115,7 @@ class FutureTest < Minitest::Test
 
   def test_on_failure_yields_execution_error
     # invalid query, registered before the future is ready, so the callback
-    # runs on the thread pool path (future_result_yielder_synchronize).
+    # runs on the dispatcher path (future_result_yielder_synchronize).
     future = Ilios::Cassandra.session.prepare_async('foo')
 
     error = nil
@@ -134,7 +134,7 @@ class FutureTest < Minitest::Test
     # invalid query; #await it first so the future is already ready by the
     # time on_failure is registered, exercising the inline path
     # (future_on_failure_synchronize's cass_future_ready branch) rather than
-    # the thread pool.
+    # the dispatcher.
     future = Ilios::Cassandra.session.prepare_async('foo')
     future.await
 
@@ -147,6 +147,123 @@ class FutureTest < Minitest::Test
     assert_kind_of(Ilios::Cassandra::ExecutionError, error)
     assert_kind_of(Integer, error.code)
     assert_match(/foo/, error.message)
+  end
+
+  def test_callback_registration_does_not_block_with_many_unyielded_futures
+    # The former SizedQueue-based thread pool blocked the registering thread
+    # once ~105 registered futures were waiting to be yielded: five futures
+    # whose callbacks block (a deterministic stand-in for slow futures) pinned
+    # all five pool threads, the queue filled up, and the next registration
+    # blocked forever. Callback registration must stay non-blocking no matter
+    # how many registered futures are still waiting to be yielded.
+    gate = Queue.new
+    statement = Ilios::Cassandra.session.prepare(<<~CQL)
+      INSERT INTO ilios.test (id, text) VALUES (?, ?);
+    CQL
+
+    gated_futures = Array.new(5) do |i|
+      statement.bind({ id: i + 100_000, text: 'gate' })
+      future = Ilios::Cassandra.session.execute_async(statement)
+      future.on_success { gate.pop }
+      future
+    end
+
+    futures = []
+    registration = Thread.new do
+      1000.times do |i|
+        statement.bind({ id: i + 101_000, text: 'flood' })
+        future = Ilios::Cassandra.session.execute_async(statement)
+        future.on_failure {} # never invoked; still occupies the delivery pipeline
+        futures << future
+      end
+    end
+
+    assert(registration.join(30), 'registering callbacks must not block')
+  ensure
+    5.times { gate << :go }
+    registration&.join
+    gated_futures&.each(&:await)
+    futures&.each(&:await)
+  end
+
+  def test_fast_future_callback_is_not_blocked_by_slow_futures
+    # With the former thread pool, five in-flight slow futures occupied all
+    # five pool threads in nogvl_future_wait, and a fast future registered
+    # afterwards had to wait in the FIFO queue behind them (head-of-line
+    # blocking). Callbacks must be delivered in completion order instead.
+    insert = Ilios::Cassandra.session.prepare(<<~CQL)
+      INSERT INTO ilios.test (id, text) VALUES (?, ?);
+    CQL
+
+    # The fast future gets its own session (its own connection), so that its
+    # tiny response does not have to wait on the wire behind the megabytes of
+    # insert payloads on the shared connection.
+    fast_cluster = Ilios::Cassandra::Cluster.new
+    fast_cluster.keyspace('ilios')
+    fast_cluster.hosts([CASSANDRA_HOST])
+    fast_session = fast_cluster.connect
+    select = fast_session.prepare('SELECT id FROM ilios.test LIMIT 1;')
+
+    order = Queue.new
+    big_text = 'x' * (4 * 1024 * 1024)
+    # Bind once and reuse: each execution snapshots the bound values, and a
+    # single bind keeps the submission phase short so the fast future is
+    # submitted well before the first slow future completes.
+    insert.bind({ id: 102_000, text: big_text })
+    slow_futures = Array.new(5) do
+      future = Ilios::Cassandra.session.execute_async(insert)
+      future.on_success { order << :slow }
+      future
+    end
+
+    fast_future = fast_session.execute_async(select)
+    fast_future.on_success { order << :fast }
+
+    fast_future.await
+    slow_futures.each(&:await)
+
+    assert_equal(:fast, order.pop)
+  end
+
+  def test_pending_futures_are_not_garbage_collected
+    # A future with a registered callback must stay alive until the callback
+    # ran, even when no Ruby code holds a reference to it any more.
+    statement = Ilios::Cassandra.session.prepare(<<~CQL)
+      INSERT INTO ilios.test (id, text) VALUES (?, ?);
+    CQL
+
+    count = 0
+    50.times do |i|
+      statement.bind({ id: i + 103_000, text: 'gc' })
+      Ilios::Cassandra.session.execute_async(statement).on_success { count += 1 }
+    end
+    10.times { GC.start }
+
+    deadline = Time.now + 30
+    sleep(0.1) while count < 50 && Time.now < deadline
+
+    assert_equal(50, count)
+  end
+
+  def test_await_inside_callback_does_not_deadlock
+    # The callback runs on the callback-delivery thread; awaiting another
+    # future from there must not deadlock.
+    insert = Ilios::Cassandra.session.prepare(<<~CQL)
+      INSERT INTO ilios.test (id, text) VALUES (?, ?);
+    CQL
+    insert.bind({ id: 104_000, text: 'x' * (1024 * 1024) })
+    outer = Ilios::Cassandra.session.execute_async(insert)
+
+    inner_result = nil
+    outer.on_success do
+      select = Ilios::Cassandra.session.prepare('SELECT id FROM ilios.test LIMIT 1;')
+      inner = Ilios::Cassandra.session.execute_async(select)
+      inner.on_success { inner_result = :done }
+      inner.await
+    end
+    outer.await
+
+    assert_equal(:done, inner_result)
   end
 
   def test_on_failure_with_zero_arity_block_still_works

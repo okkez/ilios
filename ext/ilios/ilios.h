@@ -96,8 +96,10 @@ typedef struct
     uv_sem_t sem;
     bool already_waited;
     bool yielded;
-    // Handed to the thread pool, which posts the semaphore once it is done.
-    bool queued;
+    // A native completion callback was registered with the cpp-driver and
+    // the future was handed to the dispatcher, which posts the semaphore
+    // once the callbacks were delivered.
+    bool dispatch_registered;
 } CassandraFuture;
 
 extern const rb_data_type_t cassandra_cluster_data_type;
@@ -117,14 +119,11 @@ extern VALUE eConnectError;
 extern VALUE eExecutionError;
 extern VALUE eStatementError;
 
-extern VALUE cSizedQueue;
 extern VALUE cSet;
 
 extern VALUE id_to_time;
 extern VALUE id_to_a;
 extern VALUE id_new;
-extern VALUE id_push;
-extern VALUE id_pop;
 extern VALUE id_alive;
 extern VALUE id_report_on_exception;
 extern VALUE id_code;

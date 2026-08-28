@@ -13,14 +13,11 @@ VALUE eConnectError;
 VALUE eExecutionError;
 VALUE eStatementError;
 
-VALUE cSizedQueue;
 VALUE cSet;
 
 VALUE id_to_time;
 VALUE id_to_a;
 VALUE id_new;
-VALUE id_push;
-VALUE id_pop;
 VALUE id_alive;
 VALUE id_report_on_exception;
 VALUE id_code;
@@ -136,7 +133,6 @@ void Init_ilios(void)
     rb_define_attr(eConnectError, "code", 1, 0);
     rb_define_attr(eStatementError, "code", 1, 0);
 
-    cSizedQueue = rb_const_get(rb_cThread, rb_intern("SizedQueue"));
     rb_require("set");
     cSet = rb_const_get(rb_cObject, rb_intern("Set"));
     rb_gc_register_mark_object(cSet);
@@ -144,8 +140,6 @@ void Init_ilios(void)
     id_to_time = rb_intern("to_time");
     id_to_a = rb_intern("to_a");
     id_new = rb_intern("new");
-    id_push = rb_intern("push");
-    id_pop = rb_intern("pop");
     id_alive = rb_intern("alive?");
     id_report_on_exception = rb_intern("report_on_exception=");
     id_code = rb_intern("@code");
