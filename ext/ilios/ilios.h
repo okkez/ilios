@@ -112,6 +112,9 @@ typedef struct
     // Set once the dispatcher finished running this future's callbacks;
     // guarded by the dispatch mutex in future.c.
     bool delivered;
+    // Which process incarnation created the future (see future.c); a future
+    // inherited across fork raises instead of hanging.
+    uint32_t fork_generation;
 } CassandraFuture;
 
 extern const rb_data_type_t cassandra_cluster_data_type;
@@ -139,6 +142,7 @@ extern VALUE id_new;
 extern VALUE id_alive;
 extern VALUE id_report_on_exception;
 extern VALUE id_full_message;
+extern VALUE id_owned_p;
 extern VALUE id_code;
 extern VALUE sym_unsupported_column_type;
 
