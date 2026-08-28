@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative 'helper'
+require 'timeout'
 
 class FutureTest < Minitest::Test
   def test_await
@@ -264,6 +265,49 @@ class FutureTest < Minitest::Test
     outer.await
 
     assert_equal(:done, inner_result)
+  end
+
+  def test_late_callback_on_future_owned_by_dispatcher_does_not_deadlock
+    # A future handed to the dispatcher (a callback registered while it was
+    # pending) that has completed, but whose completion the dispatcher has
+    # not delivered yet, must not run a late-registered callback inline:
+    # that ran user code under the future's mutex while the dispatcher
+    # blocks on the same mutex, deadlocking as soon as the late callback
+    # waited for another future.
+    gate = Queue.new
+    done = Queue.new
+    statement = Ilios::Cassandra.session.prepare(<<~CQL)
+      INSERT INTO ilios.test (id, text) VALUES (?, ?);
+    CQL
+
+    statement.bind({ id: 106_000, text: 'gate' })
+    gated = Ilios::Cassandra.session.execute_async(statement)
+    gated.on_success { gate.pop }
+
+    statement.bind({ id: 106_001, text: 'a' })
+    future_a = Ilios::Cassandra.session.execute_async(statement)
+    future_a.on_failure {}
+
+    statement.bind({ id: 106_002, text: 'b' })
+    future_b = Ilios::Cassandra.session.execute_async(statement)
+    future_b.on_success {}
+
+    # Let all three futures complete while the dispatcher is parked inside
+    # the gated callback, so future_a is resolved but not yet delivered.
+    sleep(1)
+    releaser = Thread.new do
+      sleep(0.5)
+      gate << :go
+    end
+
+    future_a.on_success do
+      future_b.await
+      done << :ok
+    end
+
+    assert_equal(:ok, Timeout.timeout(15) { done.pop })
+    releaser.join
+    [gated, future_a, future_b].each(&:await)
   end
 
   def test_on_failure_with_zero_arity_block_still_works

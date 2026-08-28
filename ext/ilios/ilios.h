@@ -36,6 +36,9 @@ typedef enum {
   execute_async
 } future_kind;
 
+// Node in the callback dispatch lists (defined in future.c).
+typedef struct future_dispatch_node future_dispatch_node;
+
 typedef enum {
   idempotency_unset,
   idempotency_false,
@@ -100,6 +103,10 @@ typedef struct
     // the future was handed to the dispatcher, which posts the semaphore
     // once the callbacks were delivered.
     bool dispatch_registered;
+    // The future's node in the dispatch lists while the dispatcher still
+    // owns its completion; NULL once the completion was delivered (or when
+    // the future was never handed over). Guarded by proc_mutex.
+    future_dispatch_node *dispatch_node;
 } CassandraFuture;
 
 extern const rb_data_type_t cassandra_cluster_data_type;
