@@ -510,6 +510,48 @@ class FutureTest < Minitest::Test
     future.await
   end
 
+  def test_await_inside_the_futures_own_callback_returns
+    statement = Ilios::Cassandra.session.prepare('SELECT * FROM ilios.test;')
+    future = Ilios::Cassandra.session.execute_async(statement)
+
+    result = nil
+    future.on_success do
+      future.await
+      result = :returned
+    end
+    future.await
+
+    assert_equal(:returned, result)
+  end
+
+  def test_futures_from_the_parent_process_raise_in_a_forked_child
+    skip('fork is unavailable') unless Process.respond_to?(:fork)
+
+    statement = Ilios::Cassandra.session.prepare('SELECT * FROM ilios.test;')
+    future = Ilios::Cassandra.session.execute_async(statement)
+    future.on_failure {}
+
+    pid = fork do
+      future.await
+      exit!(1)
+    rescue Ilios::Cassandra::ExecutionError
+      exit!(0)
+    end
+    watchdog = Thread.new do
+      sleep(15)
+      begin
+        Process.kill(:KILL, pid)
+      rescue StandardError
+        nil
+      end
+    end
+    _, status = Process.waitpid2(pid)
+    watchdog.kill
+    future.await
+
+    assert_predicate(status, :success?)
+  end
+
   def test_on_failure_with_zero_arity_block_still_works
     # invalid query so the failure path actually runs; a lambda instead of a
     # block so that passing the error to a zero-arity callback raises

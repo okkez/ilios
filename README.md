@@ -246,9 +246,10 @@ Notes:
 
 - Callbacks are delivered by a single background dispatcher thread in **completion order**: the order in which callbacks of different futures run is not guaranteed, and in particular is not the registration order.
 - Registering a callback never blocks, no matter how many futures are still in flight.
-- Blocking inside a callback delays the delivery of other futures' callbacks. Calling `Future#await` on **other** futures inside a callback is safe (the dispatcher keeps delivering completions while waiting), but a callback must not otherwise block waiting for another callback to run — e.g. popping a queue that only another callback pushes — because no other callback can run until the current one returns: that pattern deadlocks. Awaiting a future from inside its own callback raises `ThreadError`.
+- Blocking inside a callback delays the delivery of other futures' callbacks. Calling `Future#await` inside a callback is safe (the dispatcher keeps delivering completions while waiting, and awaiting the future from its own callback returns immediately), but a callback must not otherwise block waiting for another callback to run — e.g. popping a queue that only another callback pushes — because no other callback can run until the current one returns: that pattern deadlocks.
 - An exception raised by a callback is reported to `$stderr` and does not stop callback delivery for other futures.
-- The underlying DataStax C/C++ driver is not fork-safe: after `fork`, the child process must not use inherited ilios objects — nor rely on garbage-collecting them, since freeing an inherited `Session` waits forever for driver threads that do not exist in the child.
+- There is no backpressure: when callbacks are delivered more slowly than futures complete, undelivered completions queue up in memory. (The previous thread pool implicitly capped this by blocking registration at ~105 in-flight futures.)
+- The underlying DataStax C/C++ driver is not fork-safe: after `fork`, the child process must not use inherited ilios objects — nor rely on garbage-collecting them, since freeing an inherited `Session` waits forever for driver threads that do not exist in the child. Using an inherited `Future` in the child raises `ExecutionError`.
 
 ### Completion callback and future aggregation
 

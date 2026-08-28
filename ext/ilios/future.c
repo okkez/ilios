@@ -41,6 +41,12 @@ static struct
 static VALUE dispatcher_thread;
 /* Serializes dispatcher creation so it stays a single thread. */
 static VALUE dispatcher_mutex;
+/* Set by the running dispatcher itself, cleared by its ensure handler and by
+ * the atfork child handler — so a stale true is impossible. Read under GVL. */
+static bool dispatcher_running;
+/* Incremented in the forked child: futures stamped with an older generation
+ * belong to the parent's driver threads and cannot be used any more. */
+static uint32_t dispatch_fork_generation;
 
 typedef struct
 {
@@ -416,13 +422,32 @@ static void dispatch_wait_and_process_one(void)
     rb_thread_check_ints();
 }
 
-static VALUE dispatcher_thread_main(void *arg)
+static VALUE dispatcher_thread_body(VALUE arg)
 {
     (void)arg;
     while (1) {
         dispatch_wait_and_process_one();
     }
     return Qnil;
+}
+
+static VALUE dispatcher_thread_cleanup(VALUE arg)
+{
+    (void)arg;
+    dispatcher_running = false;
+    // Wake blocked awaiters so they notice the death and recreate the
+    // dispatcher right away instead of after their recheck interval.
+    uv_mutex_lock(&dispatch.mutex);
+    uv_cond_broadcast(&dispatch.cond);
+    uv_mutex_unlock(&dispatch.mutex);
+    return Qnil;
+}
+
+static VALUE dispatcher_thread_main(void *arg)
+{
+    (void)arg;
+    dispatcher_running = true;
+    return rb_ensure(dispatcher_thread_body, Qnil, dispatcher_thread_cleanup, Qnil);
 }
 
 static VALUE dispatcher_ensure_thread_body(VALUE arg)
@@ -437,6 +462,10 @@ static VALUE dispatcher_ensure_thread_body(VALUE arg)
 
 static void dispatcher_ensure_thread(void)
 {
+    // Fast path for the hot registration/await calls.
+    if (dispatcher_running) {
+        return;
+    }
     // Serialized: two threads finding the dispatcher dead must not both
     // create one (concurrent callbacks; an orphan would also defeat
     // #await's dispatcher-thread check).
@@ -492,8 +521,18 @@ VALUE future_create(CassFuture *future, VALUE session, VALUE statement, future_k
     cassandra_future->yielded = false;
     cassandra_future->dispatch_state = dispatch_not_registered;
     cassandra_future->delivered = false;
+    cassandra_future->fork_generation = dispatch_fork_generation;
 
     return cassandra_future_obj;
+}
+
+// Futures created before a fork are bound to the parent's driver threads,
+// which do not exist in the child: fail fast instead of hanging.
+static void future_check_fork_generation(CassandraFuture *cassandra_future)
+{
+    if (cassandra_future->fork_generation != dispatch_fork_generation) {
+        rb_raise(eExecutionError, "The future belongs to the parent process and cannot be used after fork");
+    }
 }
 
 // Hands an unresolved future to the dispatcher on the first registration.
@@ -584,6 +623,22 @@ static VALUE future_registration_synchronize(VALUE arg)
 
     GET_FUTURE(args->future, cassandra_future);
 
+    // Checked under proc_mutex so a concurrent registration cannot slip in
+    // between the check and the store.
+    if (*future_callback_slot(cassandra_future, args->kind)) {
+        rb_raise(eExecutionError, "It should not call twice");
+    }
+    // on_complete owns the future's whole outcome, so combining it with
+    // on_success/on_failure is rejected to keep the semantics simple.
+    if (args->kind == callback_kind_complete) {
+        if (cassandra_future->on_success_block || cassandra_future->on_failure_block) {
+            rb_raise(eExecutionError, "on_complete cannot be combined with on_success or on_failure");
+        }
+    } else if (cassandra_future->on_complete_block) {
+        rb_raise(eExecutionError, "%s cannot be combined with on_complete",
+                 args->kind == callback_kind_success ? "on_success" : "on_failure");
+    }
+
     block = rb_block_proc();
     future_ensure_dispatch_registration(args->future, cassandra_future);
     RB_OBJ_WRITE(args->future, future_callback_slot(cassandra_future, args->kind), block);
@@ -598,19 +653,7 @@ static VALUE future_register_callback(VALUE self, future_callback_kind kind)
 
     GET_FUTURE(self, cassandra_future);
 
-    if (*future_callback_slot(cassandra_future, kind)) {
-        rb_raise(eExecutionError, "It should not call twice");
-    }
-    // on_complete owns the future's whole outcome, so combining it with
-    // on_success/on_failure is rejected to keep the semantics simple.
-    if (kind == callback_kind_complete) {
-        if (cassandra_future->on_success_block || cassandra_future->on_failure_block) {
-            rb_raise(eExecutionError, "on_complete cannot be combined with on_success or on_failure");
-        }
-    } else if (cassandra_future->on_complete_block) {
-        rb_raise(eExecutionError, "%s cannot be combined with on_complete",
-                 kind == callback_kind_success ? "on_success" : "on_failure");
-    }
+    future_check_fork_generation(cassandra_future);
     if (!rb_block_given_p()) {
         rb_raise(rb_eArgError, "no block given");
     }
@@ -690,6 +733,14 @@ static VALUE future_await(VALUE self)
     future_dispatch_state dispatch_state;
 
     GET_FUTURE(self, cassandra_future);
+
+    future_check_fork_generation(cassandra_future);
+    // #await from inside this future's own callback (callbacks run under
+    // proc_mutex): the callback cannot wait for its own completion, and the
+    // only work left on the future is the very caller — return right away.
+    if (RTEST(rb_funcall(cassandra_future->proc_mutex, id_owned_p, 0))) {
+        return self;
+    }
 
     rb_mutex_lock(cassandra_future->proc_mutex);
     dispatch_state = cassandra_future->dispatch_state;
@@ -806,6 +857,8 @@ static void dispatch_atfork_child(void)
     dispatch.completed.tail = NULL;
     uv_mutex_init(&dispatch.mutex);
     uv_cond_init(&dispatch.cond);
+    dispatcher_running = false;
+    dispatch_fork_generation++;
 }
 
 void Init_future(void)
