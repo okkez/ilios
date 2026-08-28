@@ -57,7 +57,6 @@ typedef struct
     uv_sem_t *sem;
     bool interrupted;
     bool acquired;
-    bool timed_out;
 } dispatch_await_ctx;
 
 static void future_mark(void *ptr);
@@ -183,7 +182,7 @@ static void *dispatch_await_wait(void *ptr)
     if (uv_sem_trywait(ctx->sem) == 0) {
         ctx->acquired = true;
     } else if (!ctx->interrupted) {
-        ctx->timed_out = uv_cond_timedwait(&dispatch.cond, &dispatch.mutex, DISPATCH_AWAIT_TIMEOUT_NS) == UV_ETIMEDOUT;
+        uv_cond_timedwait(&dispatch.cond, &dispatch.mutex, DISPATCH_AWAIT_TIMEOUT_NS);
     }
     uv_mutex_unlock(&dispatch.mutex);
     return NULL;
@@ -326,6 +325,10 @@ static void dispatch_process_node(future_dispatch_node *node)
     rb_protect(dispatch_yield_body, (VALUE)future, &state);
 
     GET_FUTURE((VALUE)future, cassandra_future);
+    // Normally already cleared (under proc_mutex) by the yielder; also
+    // covers an unwind that hit before the yielder ran, so the freed node
+    // is not left dangling as "the dispatcher still owns this future".
+    cassandra_future->dispatch_node = NULL;
     uv_sem_post(&cassandra_future->sem);
     uv_mutex_lock(&dispatch.mutex);
     uv_cond_broadcast(&dispatch.cond);
@@ -460,10 +463,24 @@ VALUE future_create(CassFuture *future, VALUE session, VALUE statement, future_k
     return cassandra_future_obj;
 }
 
+// Hands an unresolved future to the dispatcher on the first registration.
+// Called under proc_mutex BEFORE the block is stored: the handover can
+// raise (allocation, an interrupt hitting a checkpoint), and the future
+// must not be left with a stored block that nobody will ever deliver. The
+// dispatcher cannot deliver the completion before the caller stored the
+// block, because delivery synchronizes on proc_mutex, which the caller
+// holds until after the store.
+static void future_ensure_dispatch_registration(VALUE future, CassandraFuture *cassandra_future)
+{
+    if (!cassandra_future->dispatch_registered && !cass_future_ready(cassandra_future->future)) {
+        future_register_dispatch(future, cassandra_future);
+    }
+}
+
 // Shared tail of the registration functions, called under proc_mutex after
 // the block was stored. Yields inline when the future is already resolved
-// and no longer owned by the dispatcher, otherwise leaves delivery to the
-// dispatcher (handing the future over on the first registration).
+// and no longer owned by the dispatcher; an unresolved future was already
+// handed to the dispatcher by future_ensure_dispatch_registration.
 // `for_success` picks which outcome this registration's block handles when
 // yielding inline.
 static VALUE future_registration_finish(VALUE future, CassandraFuture *cassandra_future, bool for_success)
@@ -494,20 +511,19 @@ static VALUE future_registration_finish(VALUE future, CassandraFuture *cassandra
         return future;
     }
 
-    if (!cassandra_future->dispatch_registered) {
-        future_register_dispatch(future, cassandra_future);
-    }
-
     return future;
 }
 
 static VALUE future_on_success_synchronize(VALUE future)
 {
     CassandraFuture *cassandra_future;
+    VALUE block;
 
     GET_FUTURE(future, cassandra_future);
 
-    RB_OBJ_WRITE(future, &cassandra_future->on_success_block, rb_block_proc());
+    block = rb_block_proc();
+    future_ensure_dispatch_registration(future, cassandra_future);
+    RB_OBJ_WRITE(future, &cassandra_future->on_success_block, block);
 
     return future_registration_finish(future, cassandra_future, true);
 }
@@ -544,10 +560,13 @@ static VALUE future_on_success(VALUE self)
 static VALUE future_on_failure_synchronize(VALUE future)
 {
     CassandraFuture *cassandra_future;
+    VALUE block;
 
     GET_FUTURE(future, cassandra_future);
 
-    RB_OBJ_WRITE(future, &cassandra_future->on_failure_block, rb_block_proc());
+    block = rb_block_proc();
+    future_ensure_dispatch_registration(future, cassandra_future);
+    RB_OBJ_WRITE(future, &cassandra_future->on_failure_block, block);
 
     return future_registration_finish(future, cassandra_future, false);
 }
@@ -601,9 +620,10 @@ static VALUE future_await(VALUE self)
         return self;
     }
     cassandra_future->already_waited = true;
+    dispatch_registered = cassandra_future->dispatch_registered;
     rb_mutex_unlock(cassandra_future->proc_mutex);
 
-    if (!cassandra_future->dispatch_registered) {
+    if (!dispatch_registered) {
         // No dispatcher involved (yet): wait on the future itself. A future
         // owned by the dispatcher is covered by the semaphore below, which
         // is posted only after the callbacks ran.
@@ -636,19 +656,18 @@ static VALUE future_await(VALUE self)
         return self;
     }
     // Wait for the dispatcher to deliver this future's callbacks. The loop
-    // wakes on every delivery and additionally times out periodically to
-    // recreate the dispatcher in case it died while we were blocked.
+    // wakes on every completion and delivery, and times out periodically,
+    // re-checking on each pass that the dispatcher is still alive to post
+    // the semaphore (recreating it when it died while we were blocked).
     dispatcher_ensure_thread();
     while (1) {
-        dispatch_await_ctx ctx = { &cassandra_future->sem, false, false, false };
+        dispatch_await_ctx ctx = { &cassandra_future->sem, false, false };
 
         rb_thread_call_without_gvl(dispatch_await_wait, &ctx, dispatch_await_ubf, &ctx);
         if (ctx.acquired) {
             break;
         }
-        if (ctx.timed_out) {
-            dispatcher_ensure_thread();
-        }
+        dispatcher_ensure_thread();
         rb_thread_check_ints();
     }
     return self;
