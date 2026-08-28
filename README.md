@@ -256,7 +256,8 @@ Notes:
 `Ilios::Cassandra::Future#on_complete` handles both outcomes with a single
 callback: the block receives `(value, nil)` on success and
 `(nil, error)` on failure, exactly once. It cannot be combined with
-`on_success`/`on_failure` on the same future.
+`on_success`/`on_failure` on the same future. The block is always invoked
+with the two arguments, so a lambda must accept both.
 
 ```ruby
 result_future = session.execute_async(statement)

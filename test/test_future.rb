@@ -501,6 +501,52 @@ class FutureTest < Minitest::Test
     assert(done)
   end
 
+  def test_future_all_await_inside_a_callback_does_not_deadlock
+    insert = Ilios::Cassandra.session.prepare('INSERT INTO ilios.test (id, text) VALUES (?, ?);')
+    insert.bind({ id: 113_000, text: 'x' })
+    trigger = Ilios::Cassandra.session.execute_async(insert)
+
+    done = Queue.new
+    trigger.on_success do
+      select = Ilios::Cassandra.session.prepare('SELECT id FROM ilios.test LIMIT 1;')
+      inner = Array.new(3) { Ilios::Cassandra.session.execute_async(select) }
+      aggregate = Ilios::Cassandra::Future.all(inner)
+      errors = nil
+      aggregate.on_complete { |errs| errors = errs }
+      aggregate.await
+      done << errors
+    end
+    trigger.await
+
+    assert_empty(done.pop(timeout: 15))
+  end
+
+  def test_future_all_callback_can_await_the_aggregated_futures
+    statement = Ilios::Cassandra.session.prepare('INSERT INTO ilios.test (id, text) VALUES (?, ?);')
+    futures = Array.new(5) do |i|
+      statement.bind({ id: i + 114_000, text: 'batch' })
+      Ilios::Cassandra.session.execute_async(statement)
+    end
+
+    aggregate = Ilios::Cassandra::Future.all(futures)
+    done = Queue.new
+    aggregate.on_complete do |errors|
+      futures.each(&:await)
+      done << errors
+    end
+
+    assert_empty(done.pop(timeout: 15), 'aggregate callback did not finish (swallowed error?)')
+    aggregate.await
+  end
+
+  def test_future_all_rejects_duplicate_futures
+    statement = Ilios::Cassandra.session.prepare('SELECT * FROM ilios.test;')
+    future = Ilios::Cassandra.session.execute_async(statement)
+
+    assert_raises(ArgumentError) { Ilios::Cassandra::Future.all([future, future]) }
+    future.await
+  end
+
   def test_future_all_rejects_futures_that_already_have_callbacks
     statement = Ilios::Cassandra.session.prepare('SELECT * FROM ilios.test;')
     future = Ilios::Cassandra.session.execute_async(statement)

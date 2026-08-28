@@ -9,11 +9,18 @@ module Ilios
       # Aggregate over multiple futures that resolves once all of them
       # completed. Created via Ilios::Cassandra::Future.all, which registers
       # +on_complete+ on every future, so the futures must not carry any
-      # callback of their own.
+      # callback of their own. Registration is not transactional: when one
+      # of the futures raises here, the futures registered before it stay
+      # bound to the abandoned aggregate.
       class All
         # @param futures [Array[Ilios::Cassandra::Future]] The futures to aggregate.
+        # @raise [ArgumentError] If the same future is given more than once.
+        # @raise [Ilios::Cassandra::ExecutionError] If a future already carries a callback.
         def initialize(futures)
           futures = futures.to_a
+          raise(ArgumentError, 'duplicate future given') if futures.uniq.size != futures.size
+
+          @futures = futures
           @mutex = Mutex.new
           @cond = ConditionVariable.new
           @remaining = futures.size
@@ -21,6 +28,7 @@ module Ilios
           @callback = nil
           @callback_invoked = false
           @callback_finished = false
+          @callback_thread = nil
           futures.each do |future|
             future.on_complete { |_value, error| future_completed(error) }
           end
@@ -49,11 +57,15 @@ module Ilios
 
         # Waits until every aggregated future completed and, when an
         # on_complete callback is registered, until that callback returned.
+        # Safe to call from inside a future callback: the waiting is
+        # delegated to the futures' own #await, which keeps processing
+        # completions on the callback-delivery thread.
         #
         # @return [Ilios::Cassandra::Future::All] self.
         def await
+          @futures.each(&:await)
           @mutex.synchronize do
-            @cond.wait(@mutex) until @remaining.zero? && (@callback.nil? || @callback_finished)
+            @cond.wait(@mutex) until @remaining.zero? && (@callback.nil? || @callback_finished || @callback_thread == Thread.current)
           end
           self
         end
@@ -78,6 +90,7 @@ module Ilios
             break nil if @callback.nil? || !@remaining.zero? || @callback_invoked
 
             @callback_invoked = true
+            @callback_thread = Thread.current
             @callback
           end
           return unless callback
@@ -86,6 +99,7 @@ module Ilios
             callback.call(@errors)
           ensure
             @mutex.synchronize do
+              @callback_thread = nil
               @callback_finished = true
               @cond.broadcast
             end
