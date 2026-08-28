@@ -242,6 +242,13 @@ prepare_future.on_success { |statement|
 prepare_future.await
 ```
 
+Notes:
+
+- Callbacks are delivered by a single background dispatcher thread in **completion order**: the order in which callbacks of different futures run is not guaranteed, and in particular is not the registration order.
+- Registering a callback never blocks, no matter how many futures are still in flight.
+- Blocking inside a callback delays the delivery of other futures' callbacks. Calling `Future#await` inside a callback is safe (the dispatcher keeps delivering completions while waiting), but other blocking calls should be avoided in hot paths.
+- An exception raised by a callback is reported to `$stderr` and does not stop callback delivery for other futures.
+
 ## Contributing
 
 Bug reports and pull requests are welcome on GitHub at https://github.com/Watson1978/ilios.
