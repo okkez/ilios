@@ -245,7 +245,7 @@ prepare_future.await
 Notes:
 
 - Callbacks are delivered by a single background dispatcher thread in **completion order**: the order in which callbacks of different futures run is not guaranteed, and in particular is not the registration order.
-- Registering a callback never blocks, no matter how many futures are still in flight.
+- Registering a callback never blocks on other futures, no matter how many of them are still in flight. The one case where it waits is a second registration on the *same* future while that future's callback is running: the two are serialized, so it blocks for the duration of that callback.
 - Blocking inside a callback delays the delivery of other futures' callbacks. Calling `Future#await` inside a callback is safe (the dispatcher keeps delivering completions while waiting, and awaiting the future from its own callback returns immediately), but a callback must not otherwise block waiting for another callback to run — e.g. popping a queue that only another callback pushes — because no other callback can run until the current one returns: that pattern deadlocks.
 - An exception raised by a callback is reported to `$stderr` and does not stop callback delivery for other futures.
 - There is no backpressure: when callbacks are delivered more slowly than futures complete, undelivered completions queue up in memory. (The previous thread pool implicitly capped this by blocking registration at ~105 in-flight futures.)

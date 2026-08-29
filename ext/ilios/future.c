@@ -56,6 +56,10 @@ static uint32_t dispatch_fork_generation;
 typedef struct
 {
     const bool *delivered;
+    /* Value of dispatch.dispatcher_deaths when the awaiter last verified the
+     * dispatcher, sampled before that check so no death can slip in between.
+     * The counter is monotonic, so even a die-then-recreate is visible. */
+    uint64_t deaths;
     bool interrupted;
     bool done;
 } dispatch_await_ctx;
@@ -89,6 +93,18 @@ static void dispatch_list_append(dispatch_list *list, future_dispatch_node *node
     list->tail = node;
 }
 
+static void dispatch_list_prepend(dispatch_list *list, future_dispatch_node *node)
+{
+    node->prev = NULL;
+    node->next = list->head;
+    if (list->head) {
+        list->head->prev = node;
+    } else {
+        list->tail = node;
+    }
+    list->head = node;
+}
+
 static void dispatch_list_remove(dispatch_list *list, future_dispatch_node *node)
 {
     if (node->prev) {
@@ -109,9 +125,12 @@ static void dispatch_registry_mark(void *ptr)
 {
     future_dispatch_node *node;
 
-    // rb_gc_mark (not the movable variant) pins the futures: their raw
-    // VALUEs are stored in native lists and passed to the cpp-driver as
-    // user data, which the GC could not update when compaction moves them.
+    // rb_gc_mark (not the movable variant) pins the futures. Movable marking
+    // would be possible — the cpp-driver's user data is the node pointer, not
+    // the VALUE — but it would need a compact callback rewriting every
+    // node->future_obj through rb_gc_location while holding dispatch.mutex,
+    // in a list a driver IO thread can be splicing at the same time. Pinning
+    // a handful of in-flight futures is deliberately preferred over that.
     uv_mutex_lock(&dispatch.mutex);
     for (node = dispatch.pending.head; node; node = node->next) {
         rb_gc_mark(node->future_obj);
@@ -182,10 +201,8 @@ static void *dispatch_await_wait(void *ptr)
 {
     dispatch_await_ctx *ctx = (dispatch_await_ctx *)ptr;
     uint64_t deadline = uv_hrtime() + DISPATCH_AWAIT_RECHECK_INTERVAL_NS;
-    uint64_t deaths;
 
     uv_mutex_lock(&dispatch.mutex);
-    deaths = dispatch.dispatcher_deaths;
     while (!ctx->interrupted) {
         uint64_t now;
 
@@ -193,20 +210,37 @@ static void *dispatch_await_wait(void *ptr)
             ctx->done = true;
             break;
         }
-        // The dispatcher died while we were waiting: nobody is left to set
-        // the flag, so return to the GVL now and let the caller recreate it
-        // instead of sitting out the recheck deadline below.
-        if (dispatch.dispatcher_deaths != deaths) {
+        // A dispatcher died since the caller last verified one was alive:
+        // nobody may be left to set the flag, so return to the GVL now and
+        // let the caller re-check instead of sitting out the deadline below.
+        // The baseline was sampled before that check, so a death racing it
+        // cannot hide here.
+        if (dispatch.dispatcher_deaths != ctx->deaths) {
             break;
         }
         now = uv_hrtime();
         if (now >= deadline) {
             break;
         }
+        // Timed rather than untimed on purpose: the deadline is the safety
+        // net for anything the predicate above cannot observe.
         uv_cond_timedwait(&dispatch.cond, &dispatch.mutex, deadline - now);
     }
     uv_mutex_unlock(&dispatch.mutex);
     return NULL;
+}
+
+// How many dispatcher threads have died so far. Monotonic, so comparing two
+// samples tells an awaiter whether a dispatcher died in between even when a
+// replacement was already created.
+static uint64_t dispatch_deaths_count(void)
+{
+    uint64_t deaths;
+
+    uv_mutex_lock(&dispatch.mutex);
+    deaths = dispatch.dispatcher_deaths;
+    uv_mutex_unlock(&dispatch.mutex);
+    return deaths;
 }
 
 // Whether the dispatcher finished running this future's callbacks.
@@ -379,9 +413,12 @@ static void dispatch_process_node(future_dispatch_node *node)
     if (cassandra_future->dispatch_state == dispatch_owned) {
         // Put the completion back for the next dispatcher round rather than
         // marking it delivered — #await must not return with the stored
-        // blocks silently dropped.
+        // blocks silently dropped. Back at the HEAD, the position it was
+        // popped from: appending would demote this future behind every
+        // completion queued meanwhile and break completion-order delivery
+        // for it.
         uv_mutex_lock(&dispatch.mutex);
-        dispatch_list_append(&dispatch.completed, node);
+        dispatch_list_prepend(&dispatch.completed, node);
         uv_mutex_unlock(&dispatch.mutex);
     } else {
         // The awaiters' signal: unlike the ownership flip (which happens
@@ -745,15 +782,17 @@ static VALUE future_await(VALUE self)
     // Wait for the dispatcher to deliver this future's callbacks, re-checking
     // on every wakeup that the dispatcher is still alive to mark futures
     // delivered (it is recreated when found dead).
-    dispatcher_ensure_thread();
     while (1) {
-        dispatch_await_ctx ctx = { &cassandra_future->delivered, false, false };
+        // The death counter is sampled BEFORE the liveness check below, so a
+        // dispatcher dying between the two is still ahead of the baseline the
+        // wait predicate compares against and wakes this thread immediately.
+        dispatch_await_ctx ctx = { &cassandra_future->delivered, dispatch_deaths_count(), false, false };
 
+        dispatcher_ensure_thread();
         rb_thread_call_without_gvl(dispatch_await_wait, &ctx, dispatch_interrupt_ubf, &ctx.interrupted);
         if (ctx.done) {
             break;
         }
-        dispatcher_ensure_thread();
         rb_thread_check_ints();
     }
     return self;
