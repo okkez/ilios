@@ -251,6 +251,61 @@ Notes:
 - There is no backpressure: when callbacks are delivered more slowly than futures complete, undelivered completions queue up in memory. (The previous thread pool implicitly capped this by blocking registration at ~105 in-flight futures.)
 - The underlying DataStax C/C++ driver is not fork-safe: after `fork`, the child process must not use inherited ilios objects — nor rely on garbage-collecting them, since freeing an inherited `Session` waits forever for driver threads that do not exist in the child. Using an inherited `Future` in the child raises `ExecutionError`.
 
+### Handling both outcomes with one callback
+
+`Ilios::Cassandra::Future#on_complete` handles success and failure in a single
+callback. The block is always called with **exactly two arguments** — the value
+and `nil` on success, `nil` and an `Ilios::Cassandra::ExecutionError` on failure
+— and runs exactly once. There is no arity special-casing, so a lambda passed
+as the callback must accept both arguments.
+
+```ruby
+result_future = session.execute_async(statement)
+result_future.on_complete { |result, error|
+  if error
+    p error.message
+  else
+    p result
+  end
+}
+```
+
+`on_complete` is exclusive with `on_success` / `on_failure` on the same future:
+registering both raises `Ilios::Cassandra::ExecutionError`, in either order.
+`Future#await` waits for the `on_complete` callback to have run, just as it does
+for the other callbacks.
+
+### Waiting for a batch of futures
+
+`Ilios::Cassandra::Future.all` aggregates several futures and resolves once every
+one of them completed. Its `on_complete` receives the failures — an empty array
+when everything succeeded — so a batch writer can decide commit or rollback in
+one place:
+
+```ruby
+futures = rows.map { |row|
+  statement.bind(row)
+  session.execute_async(statement)
+}
+
+aggregate = Ilios::Cassandra::Future.all(futures)
+aggregate.on_complete { |errors|
+  if errors.empty?
+    commit_chunk
+  else
+    rollback_chunk(errors)
+  end
+}
+aggregate.await
+```
+
+Notes:
+
+- `Future.all` registers `on_complete` on every future, so none of them may already carry a callback, and the same future must not be given twice (that raises `ArgumentError`).
+- Registration is not transactional: when one of the futures rejects the registration, the futures registered before it stay bound to the aggregate that is then thrown away.
+- `Future::All#on_complete` fires exactly once, inline when the aggregate already resolved. An empty array of futures resolves immediately.
+- `Future::All#await` waits for all the futures and for the registered callback, and is safe to call from inside a future callback — including from inside the aggregate's own callback, where it returns immediately.
+
 ## Contributing
 
 Bug reports and pull requests are welcome on GitHub at https://github.com/Watson1978/ilios.
