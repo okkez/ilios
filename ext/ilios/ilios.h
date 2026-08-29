@@ -36,6 +36,19 @@ typedef enum {
   execute_async
 } future_kind;
 
+// Who is responsible for delivering a future's callbacks.
+typedef enum {
+  // No native completion callback registered; callbacks (if any) were
+  // handled inline at registration time.
+  dispatch_not_registered,
+  // The dispatcher owns delivery of this future's completion.
+  dispatch_owned,
+  // The dispatcher began delivering the completion; registrations yield
+  // inline again. Distinct from CassandraFuture.delivered, which is set
+  // only after the callbacks finished.
+  dispatch_delivering
+} future_dispatch_state;
+
 typedef enum {
   idempotency_unset,
   idempotency_false,
@@ -93,11 +106,15 @@ typedef struct
     VALUE on_failure_block;
     VALUE proc_mutex;
 
-    uv_sem_t sem;
-    bool already_waited;
     bool yielded;
-    // Handed to the thread pool, which posts the semaphore once it is done.
-    bool queued;
+    // Guarded by proc_mutex.
+    future_dispatch_state dispatch_state;
+    // Set once the dispatcher finished running this future's callbacks;
+    // guarded by the dispatch mutex in future.c.
+    bool delivered;
+    // Which process incarnation created the future (see future.c); a future
+    // inherited across fork raises instead of hanging.
+    uint32_t fork_generation;
 } CassandraFuture;
 
 extern const rb_data_type_t cassandra_cluster_data_type;
@@ -117,16 +134,15 @@ extern VALUE eConnectError;
 extern VALUE eExecutionError;
 extern VALUE eStatementError;
 
-extern VALUE cSizedQueue;
 extern VALUE cSet;
 
 extern VALUE id_to_time;
 extern VALUE id_to_a;
 extern VALUE id_new;
-extern VALUE id_push;
-extern VALUE id_pop;
 extern VALUE id_alive;
 extern VALUE id_report_on_exception;
+extern VALUE id_full_message;
+extern VALUE id_owned_p;
 extern VALUE id_code;
 extern VALUE sym_unsupported_column_type;
 
@@ -140,7 +156,6 @@ extern VALUE future_create(CassFuture *future, VALUE session, VALUE statement, f
 extern void nogvl_future_wait(CassFuture *future);
 extern CassFuture *nogvl_session_prepare(CassSession* session, VALUE query);
 extern CassFuture *nogvl_session_execute(CassSession* session, CassStatement* statement);
-extern void nogvl_sem_wait(uv_sem_t *sem);
 
 extern void statement_default_config(CassandraStatement *cassandra_statement);
 extern CassStatement *statement_build_for_execution(CassandraStatement *cassandra_statement);
