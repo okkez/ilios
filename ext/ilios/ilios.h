@@ -104,6 +104,7 @@ typedef struct
     VALUE statement_obj;
     VALUE on_success_block;
     VALUE on_failure_block;
+    VALUE on_complete_block;
     VALUE proc_mutex;
 
     bool yielded;

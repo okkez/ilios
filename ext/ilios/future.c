@@ -267,45 +267,52 @@ static future_dispatch_node *dispatch_pop_completed(void)
     return node;
 }
 
+// The value a succeeded future hands to its callbacks: the bound Statement
+// for a prepare_async future, the Result for an execute_async one. Consumes
+// the executed CassStatement, so it must be called at most once per future
+// (delivery is at-most-once, and on_complete cannot coexist with
+// on_success).
+static VALUE future_build_success_value(CassandraFuture *cassandra_future)
+{
+    switch (cassandra_future->kind) {
+    case prepare_async:
+        {
+            CassandraStatement *cassandra_statement;
+            VALUE cassandra_statement_obj;
+
+            cassandra_statement_obj = CREATE_STATEMENT(cassandra_statement);
+            cassandra_statement->prepared = cass_future_get_prepared(cassandra_future->future);
+            cassandra_statement->statement = cass_prepared_bind(cassandra_statement->prepared);
+            cassandra_statement->session_obj = cassandra_future->session_obj;
+
+            statement_default_config(cassandra_statement);
+
+            return cassandra_statement_obj;
+        }
+    case execute_async:
+        {
+            CassandraResult *cassandra_result;
+            VALUE cassandra_result_obj;
+
+            cassandra_result_obj = CREATE_RESULT(cassandra_result);
+            cassandra_result->result = cass_future_get_result(cassandra_future->future);
+            cassandra_result->statement_obj = cassandra_future->statement_obj;
+            // Hand over the executed CassStatement so Result#next_page
+            // can reuse it and it gets freed exactly once.
+            cassandra_result->executed_statement = cassandra_future->executed_statement;
+            cassandra_future->executed_statement = NULL;
+
+            return cassandra_result_obj;
+        }
+    }
+    return Qnil; /* unreachable: kind is one of the two above */
+}
+
 static void future_result_success_yield(CassandraFuture *cassandra_future)
 {
-    VALUE obj;
-
     if (cassandra_future->on_success_block) {
         if (rb_proc_arity(cassandra_future->on_success_block)) {
-            switch (cassandra_future->kind) {
-            case prepare_async:
-                {
-                    CassandraStatement *cassandra_statement;
-                    VALUE cassandra_statement_obj;
-
-                    cassandra_statement_obj = CREATE_STATEMENT(cassandra_statement);
-                    cassandra_statement->prepared = cass_future_get_prepared(cassandra_future->future);
-                    cassandra_statement->statement = cass_prepared_bind(cassandra_statement->prepared);
-                    cassandra_statement->session_obj = cassandra_future->session_obj;
-
-                    statement_default_config(cassandra_statement);
-
-                    obj = cassandra_statement_obj;
-                }
-                break;
-            case execute_async:
-                {
-                    CassandraResult *cassandra_result;
-                    VALUE cassandra_result_obj;
-
-                    cassandra_result_obj = CREATE_RESULT(cassandra_result);
-                    cassandra_result->result = cass_future_get_result(cassandra_future->future);
-                    cassandra_result->statement_obj = cassandra_future->statement_obj;
-                    // Hand over the executed CassStatement so Result#next_page
-                    // can reuse it and it gets freed exactly once.
-                    cassandra_result->executed_statement = cassandra_future->executed_statement;
-                    cassandra_future->executed_statement = NULL;
-
-                    obj = cassandra_result_obj;
-                }
-                break;
-            }
+            VALUE obj = future_build_success_value(cassandra_future);
 
             rb_proc_call_with_block(cassandra_future->on_success_block, 1, &obj, Qnil);
         } else {
@@ -327,6 +334,23 @@ static void future_result_failure_yield(CassandraFuture *cassandra_future)
     }
 }
 
+// Yields (value, nil) when the future succeeded and (nil, error) when it
+// failed — always exactly two arguments, whatever the block's arity, so that
+// a lambda callback must accept both. Only called with the block present.
+static void future_result_complete_yield(CassandraFuture *cassandra_future)
+{
+    VALUE args[2];
+
+    if (cass_future_error_code(cassandra_future->future) == CASS_OK) {
+        args[0] = future_build_success_value(cassandra_future);
+        args[1] = Qnil;
+    } else {
+        args[0] = Qnil;
+        args[1] = ilios_future_error_new(eExecutionError, NULL, cassandra_future->future);
+    }
+    rb_proc_call_with_block(cassandra_future->on_complete_block, 2, args, Qnil);
+}
+
 static VALUE future_result_yielder_synchronize(VALUE future)
 {
     CassandraFuture *cassandra_future;
@@ -337,7 +361,12 @@ static VALUE future_result_yielder_synchronize(VALUE future)
     cassandra_future->dispatch_state = dispatch_delivering;
 
     if (!cassandra_future->yielded) {
-        if (cass_future_error_code(cassandra_future->future) == CASS_OK) {
+        // on_complete is exclusive with on_success/on_failure, so at most one
+        // of these branches has a block to run.
+        if (cassandra_future->on_complete_block) {
+            cassandra_future->yielded = true;
+            future_result_complete_yield(cassandra_future);
+        } else if (cass_future_error_code(cassandra_future->future) == CASS_OK) {
             if (cassandra_future->on_success_block) {
                 cassandra_future->yielded = true;
                 future_result_success_yield(cassandra_future);
@@ -587,10 +616,56 @@ static void future_ensure_dispatch_registration(VALUE future, CassandraFuture *c
     }
 }
 
+// Which outcomes a registered callback handles.
+typedef enum {
+    // on_success: the value, only when the future succeeded.
+    callback_kind_success,
+    // on_failure: the error, only when the future failed.
+    callback_kind_failure,
+    // on_complete: (value, nil) or (nil, error), whatever the outcome.
+    callback_kind_complete
+} future_callback_kind;
+
+// Where the block of a given callback kind is stored on the future.
+static VALUE *future_callback_slot(CassandraFuture *cassandra_future, future_callback_kind kind)
+{
+    switch (kind) {
+    case callback_kind_success:
+        return &cassandra_future->on_success_block;
+    case callback_kind_failure:
+        return &cassandra_future->on_failure_block;
+    case callback_kind_complete:
+        return &cassandra_future->on_complete_block;
+    }
+    return NULL; /* unreachable: kind is one of the three above */
+}
+
+// Rejects a registration that would leave the future with two callbacks
+// claiming the same outcome. Called under proc_mutex, before the block is
+// stored and before anything fallible runs, so a rejection leaves the future
+// exactly as it was.
+static void future_check_callback_conflict(CassandraFuture *cassandra_future, future_callback_kind kind)
+{
+    if (*future_callback_slot(cassandra_future, kind)) {
+        rb_raise(eExecutionError, "It should not call twice");
+    }
+    // on_complete already covers both outcomes, so combining it with the
+    // outcome-specific callbacks is rejected in either direction rather than
+    // given some subtle precedence rule.
+    if (kind == callback_kind_complete) {
+        if (cassandra_future->on_success_block || cassandra_future->on_failure_block) {
+            rb_raise(eExecutionError, "on_complete cannot be combined with on_success or on_failure");
+        }
+    } else if (cassandra_future->on_complete_block) {
+        rb_raise(eExecutionError, "%s cannot be combined with on_complete",
+                 kind == callback_kind_success ? "on_success" : "on_failure");
+    }
+}
+
 // Shared registration tail, called under proc_mutex after the block was
 // stored. Yields inline when the future is resolved and no longer owned by
-// the dispatcher; `for_success` picks which outcome the block handles.
-static void future_registration_finish(CassandraFuture *cassandra_future, bool for_success)
+// the dispatcher; `kind` picks which outcomes the block handles.
+static void future_registration_finish(CassandraFuture *cassandra_future, future_callback_kind kind)
 {
     bool succeeded;
 
@@ -606,21 +681,35 @@ static void future_registration_finish(CassandraFuture *cassandra_future, bool f
         // for another future.
         return;
     }
+    if (cassandra_future->yielded) {
+        return;
+    }
     succeeded = cass_future_error_code(cassandra_future->future) == CASS_OK;
-    if (!cassandra_future->yielded && succeeded == for_success) {
-        cassandra_future->yielded = true;
-        if (for_success) {
+    switch (kind) {
+    case callback_kind_success:
+        if (succeeded) {
+            cassandra_future->yielded = true;
             future_result_success_yield(cassandra_future);
-        } else {
+        }
+        break;
+    case callback_kind_failure:
+        if (!succeeded) {
+            cassandra_future->yielded = true;
             future_result_failure_yield(cassandra_future);
         }
+        break;
+    case callback_kind_complete:
+        // Handles both outcomes, so it always runs.
+        cassandra_future->yielded = true;
+        future_result_complete_yield(cassandra_future);
+        break;
     }
 }
 
 typedef struct
 {
     VALUE future;
-    bool for_success;
+    future_callback_kind kind;
 } future_registration_args;
 
 static VALUE future_registration_synchronize(VALUE arg)
@@ -633,23 +722,19 @@ static VALUE future_registration_synchronize(VALUE arg)
 
     // Checked under proc_mutex so a concurrent registration cannot slip in
     // between the check and the store.
-    if (args->for_success ? cassandra_future->on_success_block : cassandra_future->on_failure_block) {
-        rb_raise(eExecutionError, "It should not call twice");
-    }
+    future_check_callback_conflict(cassandra_future, args->kind);
 
     block = rb_block_proc();
     future_ensure_dispatch_registration(args->future, cassandra_future);
-    RB_OBJ_WRITE(args->future,
-                 args->for_success ? &cassandra_future->on_success_block : &cassandra_future->on_failure_block,
-                 block);
-    future_registration_finish(cassandra_future, args->for_success);
+    RB_OBJ_WRITE(args->future, future_callback_slot(cassandra_future, args->kind), block);
+    future_registration_finish(cassandra_future, args->kind);
     return args->future;
 }
 
-static VALUE future_register_callback(VALUE self, bool for_success)
+static VALUE future_register_callback(VALUE self, future_callback_kind kind)
 {
     CassandraFuture *cassandra_future;
-    future_registration_args args = { self, for_success };
+    future_registration_args args = { self, kind };
 
     GET_FUTURE(self, cassandra_future);
 
@@ -683,12 +768,13 @@ static VALUE future_register_callback(VALUE self, bool for_success)
  *   Yields +Cassandra::Statement+ object when future was created by +Cassandra::Session#prepare_async+.
  *   Yields +Cassandra::Result+ object when future was created by +Cassandra::Session#execute_async+.
  * @return [Cassandra::Future] self.
- * @raise [Cassandra::ExecutionError] If this method will be called twice.
+ * @raise [Cassandra::ExecutionError] If this method will be called twice, or
+ *   if +on_complete+ is already registered on this future.
  * @raise [ArgumentError] If no block was given.
  */
 static VALUE future_on_success(VALUE self)
 {
-    return future_register_callback(self, true);
+    return future_register_callback(self, callback_kind_success);
 }
 
 /**
@@ -701,12 +787,38 @@ static VALUE future_on_success(VALUE self)
  *   yielded when the block accepts an argument; a zero-arity block is still
  *   called with no arguments.
  * @return [Cassandra::Future] self.
- * @raise [Cassandra::ExecutionError] If this method will be called twice.
+ * @raise [Cassandra::ExecutionError] If this method will be called twice, or
+ *   if +on_complete+ is already registered on this future.
  * @raise [ArgumentError] If no block was given.
  */
 static VALUE future_on_failure(VALUE self)
 {
-    return future_register_callback(self, false);
+    return future_register_callback(self, callback_kind_failure);
+}
+
+/**
+ * Run block when future resolves, whatever the outcome.
+ * The block is always called with exactly two arguments: the value and +nil+
+ * when the future succeeded, +nil+ and the error when it failed. There is no
+ * arity special-casing, so a lambda callback must accept both arguments.
+ * The callback is invoked on a background dispatcher thread as soon as the
+ * future completes: callbacks of different futures run in completion order,
+ * not in registration order.
+ *
+ * Exclusive with +on_success+ and +on_failure+ on the same future.
+ *
+ * @yieldparam value [Cassandra::Statement, Cassandra::Result, nil] The value, or +nil+ when the future failed.
+ *   Yields +Cassandra::Statement+ object when future was created by +Cassandra::Session#prepare_async+.
+ *   Yields +Cassandra::Result+ object when future was created by +Cassandra::Session#execute_async+.
+ * @yieldparam error [Cassandra::ExecutionError, nil] The failure reason, or +nil+ when the future succeeded.
+ * @return [Cassandra::Future] self.
+ * @raise [Cassandra::ExecutionError] If this method will be called twice, or
+ *   if +on_success+ or +on_failure+ is already registered on this future.
+ * @raise [ArgumentError] If no block was given.
+ */
+static VALUE future_on_complete(VALUE self)
+{
+    return future_register_callback(self, callback_kind_complete);
 }
 
 /**
@@ -743,7 +855,8 @@ static VALUE future_await(VALUE self)
         // paths below cover completion too.
         nogvl_future_wait(cassandra_future->future);
         rb_mutex_lock(cassandra_future->proc_mutex);
-        has_callback = cassandra_future->on_success_block || cassandra_future->on_failure_block;
+        has_callback = cassandra_future->on_success_block || cassandra_future->on_failure_block ||
+                       cassandra_future->on_complete_block;
         dispatch_state = cassandra_future->dispatch_state;
         rb_mutex_unlock(cassandra_future->proc_mutex);
 
@@ -805,6 +918,7 @@ static void future_mark(void *ptr)
     rb_gc_mark_movable(cassandra_future->statement_obj);
     rb_gc_mark_movable(cassandra_future->on_success_block);
     rb_gc_mark_movable(cassandra_future->on_failure_block);
+    rb_gc_mark_movable(cassandra_future->on_complete_block);
     rb_gc_mark_movable(cassandra_future->proc_mutex);
 }
 
@@ -845,6 +959,7 @@ static void future_compact(void *ptr)
     cassandra_future->statement_obj = rb_gc_location(cassandra_future->statement_obj);
     cassandra_future->on_success_block = rb_gc_location(cassandra_future->on_success_block);
     cassandra_future->on_failure_block = rb_gc_location(cassandra_future->on_failure_block);
+    cassandra_future->on_complete_block = rb_gc_location(cassandra_future->on_complete_block);
     cassandra_future->proc_mutex = rb_gc_location(cassandra_future->proc_mutex);
 }
 
@@ -874,6 +989,7 @@ void Init_future(void)
 
     rb_define_method(cFuture, "on_success", future_on_success, 0);
     rb_define_method(cFuture, "on_failure", future_on_failure, 0);
+    rb_define_method(cFuture, "on_complete", future_on_complete, 0);
     rb_define_method(cFuture, "await", future_await, 0);
 
     uv_mutex_init(&dispatch.mutex);
