@@ -212,6 +212,8 @@ class FutureTest < Minitest::Test
     # so retry the race. The former FIFO pool never delivered :fast first,
     # with or without retries.
     first = nil
+    slow_futures = nil
+    fast_future = nil
     3.times do
       order = Queue.new
       slow_futures = Array.new(5) do
@@ -230,6 +232,13 @@ class FutureTest < Minitest::Test
     end
 
     assert_equal(:fast, first)
+  ensure
+    # Session and Cluster expose no close/disconnect, so the dedicated
+    # connection is simply dropped for the GC to reclaim; make sure none of
+    # this test's callbacks is still in flight when it returns, including
+    # when the assertion above failed.
+    fast_future&.await
+    slow_futures&.each(&:await)
   end
 
   def test_pending_futures_are_not_garbage_collected
@@ -306,6 +315,47 @@ class FutureTest < Minitest::Test
     assert_equal(:ok, done.pop(timeout: 15), 'late-registered callback did not run within 15s (deadlock?)')
     releaser.join
     [gated, future_a, future_b].each(&:await)
+  end
+
+  def test_callback_may_register_on_the_future_being_delivered_around_it
+    # While the dispatcher delivers `outer`'s callback it holds that future's
+    # mutex, and a nested #await inside the callback drains other completed
+    # futures on the same thread, so `pumped`'s callback runs inside
+    # `outer`'s critical section. Registering another callback on `outer`
+    # from there must not try to re-lock the mutex: that raised ThreadError,
+    # which the dispatcher reports and swallows, losing the registration and
+    # aborting the rest of `pumped`'s callback while still marking it
+    # delivered.
+    select = Ilios::Cassandra.session.prepare('SELECT id FROM ilios.test LIMIT 1;')
+    outer = Ilios::Cassandra.session.execute_async(select)
+    pumped_result = Queue.new
+
+    pumped = nil
+    inner = nil
+    outer.on_success do
+      pumped = Ilios::Cassandra.session.execute_async(select)
+      pumped.on_success do
+        outer.on_failure {}
+        pumped_result << :ok
+      rescue StandardError => e
+        pumped_result << e
+      end
+      # Give `pumped` time to complete, so it is already queued when the
+      # nested await below starts draining completions on this thread.
+      sleep(0.5)
+
+      inner = Ilios::Cassandra.session.execute_async(select)
+      # A registered callback is what makes the await below take the
+      # dispatcher path that drains completions.
+      inner.on_success {}
+      inner.await
+    end
+    outer.await
+
+    assert_equal(:ok, pumped_result.pop(timeout: 15), 'the pumped callback did not run to completion')
+    # The registration really took effect rather than being swallowed.
+    assert_raises(Ilios::Cassandra::ExecutionError) { outer.on_failure {} }
+    [pumped, inner].each(&:await)
   end
 
   def test_concurrent_awaits_all_return_after_the_callback_ran

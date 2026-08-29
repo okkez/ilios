@@ -35,6 +35,11 @@ static struct
     uv_cond_t cond;
     dispatch_list pending;   /* native callback registered, not yet completed */
     dispatch_list completed; /* completed, waiting to be yielded (FIFO) */
+    /* Bumped by the dying dispatcher before it broadcasts. Awaiters compare
+     * it against the value they entered their wait with, so a death is part
+     * of the wait predicate instead of a wakeup they cannot tell apart from
+     * a spurious one. */
+    uint64_t dispatcher_deaths;
 } dispatch;
 
 /* Created lazily, recreated when found dead (fork, Thread#kill, fatal error). */
@@ -177,13 +182,21 @@ static void *dispatch_await_wait(void *ptr)
 {
     dispatch_await_ctx *ctx = (dispatch_await_ctx *)ptr;
     uint64_t deadline = uv_hrtime() + DISPATCH_AWAIT_RECHECK_INTERVAL_NS;
+    uint64_t deaths;
 
     uv_mutex_lock(&dispatch.mutex);
+    deaths = dispatch.dispatcher_deaths;
     while (!ctx->interrupted) {
         uint64_t now;
 
         if (*ctx->delivered) {
             ctx->done = true;
+            break;
+        }
+        // The dispatcher died while we were waiting: nobody is left to set
+        // the flag, so return to the GVL now and let the caller recreate it
+        // instead of sitting out the recheck deadline below.
+        if (dispatch.dispatcher_deaths != deaths) {
             break;
         }
         now = uv_hrtime();
@@ -359,6 +372,10 @@ static void dispatch_process_node(future_dispatch_node *node)
     GET_FUTURE((VALUE)future, cassandra_future);
     // The yielder flips dispatch_state on this thread when delivery begins,
     // so dispatch_owned here means an unwind hit before any callback ran.
+    // Read without proc_mutex on purpose: every writer of dispatch_state runs
+    // under the GVL, and this thread is the only one that writes the
+    // owned->delivering transition, so no other thread can change what this
+    // read observes while we hold the GVL here.
     if (cassandra_future->dispatch_state == dispatch_owned) {
         // Put the completion back for the next dispatcher round rather than
         // marking it delivered — #await must not return with the stored
@@ -369,6 +386,12 @@ static void dispatch_process_node(future_dispatch_node *node)
     } else {
         // The awaiters' signal: unlike the ownership flip (which happens
         // when delivery begins), this is set only after the callbacks ran.
+        // "Ran" includes "started and unwound": a non-StandardError raised
+        // inside a completion this callback pumped through a nested #await
+        // propagates through the enclosing callback's frame and lands here
+        // too. Delivery is at-most-once by design — the partially executed
+        // callback is deliberately not retried — so the future is marked
+        // delivered and #await is released rather than left hanging.
         uv_mutex_lock(&dispatch.mutex);
         cassandra_future->delivered = true;
         uv_cond_broadcast(&dispatch.cond);
@@ -412,9 +435,12 @@ static VALUE dispatcher_thread_cleanup(VALUE arg)
 {
     (void)arg;
     dispatcher_running = false;
-    // Wake blocked awaiters so they notice the death and recreate the
-    // dispatcher right away instead of after their recheck interval.
+    // Publish the death into the awaiters' wait predicate before waking
+    // them: seeing the bumped counter is what lets them leave the no-GVL
+    // wait right away and recreate the dispatcher, instead of treating the
+    // broadcast as a spurious wakeup and sleeping out their recheck interval.
     uv_mutex_lock(&dispatch.mutex);
+    dispatch.dispatcher_deaths++;
     uv_cond_broadcast(&dispatch.cond);
     uv_mutex_unlock(&dispatch.mutex);
     return Qnil;
@@ -595,6 +621,18 @@ static VALUE future_register_callback(VALUE self, bool for_success)
         rb_raise(rb_eArgError, "no block given");
     }
 
+    // Registering on a future whose own callback is running on this very
+    // thread: the dispatcher holds proc_mutex while yielding, and a nested
+    // #await inside that callback drains other completions on the same
+    // thread, so their callbacks can land here. Re-locking would raise
+    // ThreadError, which the dispatcher reports and swallows — losing both
+    // the registration and the rest of the pumped callback. An outer frame
+    // of this same stack already holds the lock, so the mutual exclusion the
+    // critical section needs is in force: run it directly.
+    if (RTEST(rb_funcall(cassandra_future->proc_mutex, id_owned_p, 0))) {
+        return future_registration_synchronize((VALUE)&args);
+    }
+
     return rb_mutex_synchronize(cassandra_future->proc_mutex, future_registration_synchronize, (VALUE)&args);
 }
 
@@ -685,6 +723,9 @@ static VALUE future_await(VALUE self)
     // Dispatcher involved. A callback is guaranteed to exist: registration
     // leaves dispatch_not_registered and stores the block inside the same
     // proc_mutex critical section.
+    // Both `dispatcher_thread` and `dispatcher_running` below are plain
+    // globals read under the GVL, which is what serializes them against the
+    // dispatcher bookkeeping that writes them.
     if (rb_thread_current() == dispatcher_thread) {
         // Called from inside a callback: sleeping until the delivered flag
         // is set would deadlock because this thread is the one that sets
@@ -693,6 +734,12 @@ static VALUE future_await(VALUE self)
         while (!future_delivered_p(cassandra_future)) {
             dispatch_wait_and_process_one();
         }
+        return self;
+    }
+    // Already delivered — the common "#await after the callback ran" case.
+    // Checked before touching the dispatcher so that a future with nothing
+    // left to do does not resurrect a dead dispatcher thread.
+    if (future_delivered_p(cassandra_future)) {
         return self;
     }
     // Wait for the dispatcher to deliver this future's callbacks, re-checking
@@ -726,13 +773,22 @@ static void future_destroy(void *ptr)
 {
     CassandraFuture *cassandra_future = (CassandraFuture *)ptr;
 
-    if (cassandra_future->future) {
-        cass_future_free(cassandra_future->future);
-    }
-    if (cassandra_future->executed_statement) {
-        // Safe even if the request is still in flight: the driver's request
-        // holds its own reference to the statement internals.
-        cass_statement_free(cassandra_future->executed_statement);
+    // Only the process incarnation that created these driver objects may
+    // free them. In a forked child the atfork handler dropped the dispatch
+    // lists, so parent-created futures become collectable here — but the
+    // driver is not fork-safe: an IO thread of the parent may have been
+    // mid-mutation of exactly these objects at fork time, and it does not
+    // exist in the child to finish. Leak them deliberately; the child cannot
+    // use the driver anyway, and the ruby-owned struct is still freed.
+    if (cassandra_future->fork_generation == dispatch_fork_generation) {
+        if (cassandra_future->future) {
+            cass_future_free(cassandra_future->future);
+        }
+        if (cassandra_future->executed_statement) {
+            // Safe even if the request is still in flight: the driver's
+            // request holds its own reference to the statement internals.
+            cass_statement_free(cassandra_future->executed_statement);
+        }
     }
     xfree(cassandra_future);
 }
