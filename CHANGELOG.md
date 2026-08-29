@@ -1,5 +1,10 @@
 # Change Log
 
+## Unreleased
+
+- Deliver future callbacks event-driven via `cass_future_set_callback` instead of a fixed thread pool polling a bounded queue. Registering `Future#on_success` / `Future#on_failure` no longer blocks once ~105 registered futures are in flight, and a slow future no longer delays the callbacks of faster futures completing behind it (head-of-line blocking). Callbacks now run on a single dispatcher thread in completion order; an exception raised by a callback is reported to `$stderr` and no longer kills a delivery thread. Public API and `Future#await` semantics are unchanged. Behavioral note: since all callbacks share one dispatcher thread, a callback that blocks waiting for **another callback** to run now deadlocks, where the former 5-thread pool happened to tolerate a few such callbacks; `Future#await` inside callbacks remains safe (see README)
+- `Future#await` called from inside the future's own callback returns immediately instead of raising `ThreadError`, and a `Future` inherited across `fork` raises `ExecutionError` instead of hanging
+
 ## 1.2.0
 
 - Fix cluster setters silently ignoring invalid values in `Cluster#port`, `#protocol_version`, `#connect_timeout`, `#request_timeout` and `#resolve_timeout` (#36)
