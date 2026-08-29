@@ -97,6 +97,9 @@ module Ilios
 
       class All
         def initialize: (Array[Ilios::Cassandra::Future] futures) -> void
+        # The failures come in completion order, not in the order of the futures
+        # given to Future.all, so the array cannot be indexed to find out which
+        # future failed.
         def on_complete: () { (Array[Ilios::Cassandra::ExecutionError]) -> void } -> self
         def await: () -> self
       end

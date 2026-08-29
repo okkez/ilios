@@ -304,7 +304,9 @@ Notes:
 - `Future.all` registers `on_complete` on every future, so none of them may already carry a callback, and the same future must not be given twice (that raises `ArgumentError`).
 - Registration is not transactional: when one of the futures rejects the registration, the futures registered before it stay bound to the aggregate that is then thrown away.
 - `Future::All#on_complete` fires exactly once, inline when the aggregate already resolved. An empty array of futures resolves immediately.
-- `Future::All#await` waits for all the futures and for the registered callback, and is safe to call from inside a future callback — including from inside the aggregate's own callback, where it returns immediately.
+- The `errors` array holds the failures in **completion order**, which is unrelated to the order of the futures passed to `Future.all`. It cannot be indexed to find out which future failed; when you need that, keep the association yourself (e.g. one `on_complete` per future in addition to the aggregate).
+- An exception raised by the aggregate callback propagates out of `Future::All#on_complete` when the block ran inline (the aggregate had already resolved), but is reported to `$stderr` and swallowed when it ran later on the dispatcher thread — the same split as for `Future#on_success` / `#on_failure`.
+- `Future::All#await` waits for all the futures and for the registered callback. Calling it from inside a future callback is safe in the cases it exists for: waiting for the futures is delegated to their own `#await`, and a call made from inside the aggregate's own callback returns immediately. It is *not* safe when the aggregate callback happens to be running concurrently on another thread — `#await` then blocks until that callback returns, which is the general "a callback must not block waiting for another callback" rule above.
 
 ## Contributing
 

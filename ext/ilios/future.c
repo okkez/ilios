@@ -667,8 +667,6 @@ static void future_check_callback_conflict(CassandraFuture *cassandra_future, fu
 // the dispatcher; `kind` picks which outcomes the block handles.
 static void future_registration_finish(CassandraFuture *cassandra_future, future_callback_kind kind)
 {
-    bool succeeded;
-
     if (!cass_future_ready(cassandra_future->future)) {
         // Unresolved: already handed to the dispatcher by
         // future_ensure_dispatch_registration.
@@ -684,22 +682,24 @@ static void future_registration_finish(CassandraFuture *cassandra_future, future
     if (cassandra_future->yielded) {
         return;
     }
-    succeeded = cass_future_error_code(cassandra_future->future) == CASS_OK;
+    // The outcome is queried only where it decides something: the
+    // on_complete branch runs either way, and its yielder determines the
+    // outcome itself, so asking the driver here too would take the future's
+    // internal lock a second time for nothing.
     switch (kind) {
     case callback_kind_success:
-        if (succeeded) {
+        if (cass_future_error_code(cassandra_future->future) == CASS_OK) {
             cassandra_future->yielded = true;
             future_result_success_yield(cassandra_future);
         }
         break;
     case callback_kind_failure:
-        if (!succeeded) {
+        if (cass_future_error_code(cassandra_future->future) != CASS_OK) {
             cassandra_future->yielded = true;
             future_result_failure_yield(cassandra_future);
         }
         break;
     case callback_kind_complete:
-        // Handles both outcomes, so it always runs.
         cassandra_future->yielded = true;
         future_result_complete_yield(cassandra_future);
         break;

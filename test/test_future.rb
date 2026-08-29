@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'timeout'
+
 require_relative 'helper'
 
 class FutureTest < Minitest::Test
@@ -745,7 +747,10 @@ class FutureAllTest < Minitest::Test
     end
     trigger.await
 
-    assert_empty(done.pop(timeout: 15), 'Future::All#await did not return on the dispatcher thread')
+    errors = done.pop(timeout: 15)
+
+    refute_nil(errors, 'Future::All#await did not return on the dispatcher thread')
+    assert_empty(errors)
   end
 
   def test_await_inside_the_aggregate_callback_returns
@@ -765,7 +770,10 @@ class FutureAllTest < Minitest::Test
       done << errors
     end
 
-    assert_empty(done.pop(timeout: 15), 'Future::All#await did not return from inside its own callback')
+    errors = done.pop(timeout: 15)
+
+    refute_nil(errors, 'Future::All#await did not return from inside its own callback')
+    assert_empty(errors)
     aggregate.await
   end
 
@@ -783,7 +791,10 @@ class FutureAllTest < Minitest::Test
       done << errors
     end
 
-    assert_empty(done.pop(timeout: 15), 'aggregate callback did not finish (swallowed error?)')
+    errors = done.pop(timeout: 15)
+
+    refute_nil(errors, 'aggregate callback did not finish (swallowed error?)')
+    assert_empty(errors)
     aggregate.await
   end
 
@@ -804,5 +815,56 @@ class FutureAllTest < Minitest::Test
 
     assert_raises(Ilios::Cassandra::ExecutionError) { Ilios::Cassandra::Future.all([future]) }
     future.await
+  end
+
+  def test_rejects_futures_that_already_carry_an_on_complete_callback
+    # The aggregate claims each future's on_complete slot, so a future that
+    # already uses it is rejected too, by the double-registration check rather
+    # than by the mixing check.
+    statement = Ilios::Cassandra.session.prepare('SELECT * FROM ilios.test;')
+    future = Ilios::Cassandra.session.execute_async(statement)
+    future.on_complete { |_value, _error| }
+
+    assert_raises(Ilios::Cassandra::ExecutionError) { Ilios::Cassandra::Future.all([future]) }
+    future.await
+  end
+
+  def test_await_returns_after_the_callback_was_interrupted
+    # An async exception thrown into the thread running the aggregate callback
+    # must not strand the aggregate: the completion has to be published and
+    # the awaiters woken even when the callback never returns normally.
+    statement = Ilios::Cassandra.session.prepare('INSERT INTO ilios.test (id, text) VALUES (?, ?);')
+    futures = Array.new(2) do |i|
+      statement.bind({ id: i + 119_000, text: 'interrupt' })
+      Ilios::Cassandra.session.execute_async(statement)
+    end
+    # Resolve them first, so the callback fires inline on this thread and the
+    # interrupt below is guaranteed to land inside it.
+    futures.each(&:await)
+
+    aggregate = Ilios::Cassandra::Future.all(futures)
+    assert_raises(Timeout::Error) do
+      Timeout.timeout(0.2) { aggregate.on_complete { |_errors| sleep(30) } }
+    end
+
+    assert_same(aggregate, Timeout.timeout(15) { aggregate.await })
+  end
+
+  def test_releases_the_aggregated_futures_once_resolved
+    # A long-lived aggregate must not keep every member future (and its
+    # driver-side result buffer) alive for its own lifetime.
+    statement = Ilios::Cassandra.session.prepare('INSERT INTO ilios.test (id, text) VALUES (?, ?);')
+    futures = Array.new(3) do |i|
+      statement.bind({ id: i + 120_000, text: 'release' })
+      Ilios::Cassandra.session.execute_async(statement)
+    end
+
+    aggregate = Ilios::Cassandra::Future.all(futures)
+    aggregate.on_complete { |_errors| }
+    aggregate.await
+
+    assert_empty(aggregate.instance_variable_get(:@futures))
+    # Still honors its contract afterwards.
+    assert_same(aggregate, aggregate.await)
   end
 end
